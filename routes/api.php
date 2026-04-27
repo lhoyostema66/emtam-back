@@ -58,7 +58,7 @@ Route::prefix('v1')->group(function () {
         Route::put('crud/{table}/one', [TableCrudController::class, 'update']);
         Route::delete('crud/{table}/one', [TableCrudController::class, 'destroy']);
 
-        require __DIR__.'/api_db.php';
+        require __DIR__ . '/api_db.php';
 
         Route::get('tenant/settings', [TenantSettingsController::class, 'show']);
         Route::put('tenant/settings', [TenantSettingsController::class, 'update']);
@@ -98,3 +98,42 @@ Route::prefix('v1')->group(function () {
         Route::get('audit/responsibilities', [AuditController::class, 'responsibilities']);
     });
 });
+
+
+// Route::get('/test-sms', function () {
+//     try {
+//         $apiKey = config('services.brevo.api_key');
+//         $sender = env('BREVO_SMS_SENDER', 'NotifEMTA');
+//         $phone = request('phone');
+//         $msg = "Prueba desde Laravel y Postman";
+
+//         if (!$phone) {
+//             return response()->json(['error' => 'Falta el parametro ?phone=+51...'], 400);
+//         }
+
+//         // URL CORREGIDA
+//         $url = 'https://api.brevo.com/v3/transactionalSMS/sms';
+
+//         $response = Http::withHeaders([
+//             'api-key' => $apiKey,
+//             'accept' => 'application/json',
+//         ])->post($url, [
+//                     'sender' => mb_substr($sender, 0, 11),
+//                     'recipient' => $phone,
+//                     'content' => $msg,
+//                     'type' => 'transactional',
+//                 ]);
+
+//         return response()->json([
+//             'status_code' => $response->status(),
+//             'body' => $response->json(),
+//             'api_key_used' => substr((string) $apiKey, 0, 10) . '...'
+//         ]);
+
+//     } catch (\Exception $e) {
+//         // Si Laravel falla, te mostrará el error exacto aquí
+//         return response()->json([
+//             'error_interno' => $e->getMessage()
+//         ], 500);
+//     }
+// });

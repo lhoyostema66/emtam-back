@@ -31,7 +31,8 @@ class ActivationController extends Controller
     public function __construct(
         private readonly TenantContext $tenantContext,
         private readonly AuditLogger $auditLogger,
-    ) {}
+    ) {
+    }
 
     public function store(Request $request): JsonResponse
     {
@@ -67,7 +68,7 @@ class ActivationController extends Controller
             'asignaciones_manuales.*.suplente_per_ids.*' => ['string'],
         ]);
 
-        $activationId = 'ACPL-'.Str::uuid()->toString();
+        $activationId = 'ACPL-' . Str::uuid()->toString();
 
         // Failsafe: If per_id or rol_id are missing, try to resolve from current user
         $resolvedPerId = $data['per_id'] ?? null;
@@ -81,7 +82,7 @@ class ActivationController extends Controller
                     ->where('per-tenant_id', $tenantId)
                     ->where('per-email', $user->email)
                     ->first();
-                
+
                 if ($persona) {
                     $resolvedPerId = $persona->{'per-id'};
                 }
@@ -107,7 +108,7 @@ class ActivationController extends Controller
                 ->whereRaw("UPPER(COALESCE(`pe_ro-activo`, 'SI')) <> 'NO'")
                 ->orderBy('pe_ro-id')
                 ->first();
-                
+
             if ($role) {
                 $resolvedRolId = $role->{'pe_ro-rol_id-fk'};
             }
@@ -119,388 +120,388 @@ class ActivationController extends Controller
 
         return DB::transaction(function () use ($data, $tenantId, $activationId, $request, $resolvedPerId, $resolvedRolId) {
             try {
-            if (! Schema::hasTable('activacion_del_plan_trs')) {
-                return response()->json(['message' => 'Missing activacion_del_plan_trs table.'], 422);
-            }
-
-            $activationNow = $this->tenantNow($tenantId);
-            $activationDate = $activationNow->toDateString();
-            $activationTime = $activationNow->toTimeString();
-            $activationTs = $activationNow->toDateTimeString();
-
-            $niAl = Schema::hasTable('nivel_alerta_cat')
-                ? DB::table('nivel_alerta_cat')->where('ni_al-id', $data['ni_al_id'])->first()
-                : null;
-
-            $niEm = null;
-            if ($niAl !== null && Schema::hasTable('nivel_emergencia_cat')) {
-                $niEmId = (string) ($niAl->{'ni_al-ni_em_id-fk'} ?? '');
-                if ($niEmId !== '') {
-                    $niEm = DB::table('nivel_emergencia_cat')->where('ni_em-id', $niEmId)->first();
+                if (!Schema::hasTable('activacion_del_plan_trs')) {
+                    return response()->json(['message' => 'Missing activacion_del_plan_trs table.'], 422);
                 }
-            }
 
-            $niAlCod = strtoupper(trim((string) ($niAl?->{'ni_al-cod'} ?? '')));
-            $niAlNombre = strtoupper(trim((string) ($niAl?->{'ni_al-nombre'} ?? '')));
-            $niEmActivaPlan = strtoupper(trim((string) ($niEm?->{'ni_em-activa_plan'} ?? 'NO')));
-            $criterioSelector = strtoupper(trim((string) ($data['justificacion'] ?? '')));
+                $activationNow = $this->tenantNow($tenantId);
+                $activationDate = $activationNow->toDateString();
+                $activationTime = $activationNow->toTimeString();
+                $activationTs = $activationNow->toDateTimeString();
 
-            $isAviso = $niAlCod !== '' && (str_contains($niAlNombre, 'AVISO') || $niAlCod === 'AVISO' || $niAlCod === 'AV' || str_starts_with($niAlCod, 'AV'));
-            $isPrealerta = str_starts_with($niAlCod, 'P') || str_contains($niAlNombre, 'PREALERTA');
+                $niAl = Schema::hasTable('nivel_alerta_cat')
+                    ? DB::table('nivel_alerta_cat')->where('ni_al-id', $data['ni_al_id'])->first()
+                    : null;
 
-            if ($isPrealerta && $isAviso) {
-                $isAviso = false;
-            }
-
-            $scenario = 'NORMALIDAD';
-            if ($criterioSelector === 'NORMALIDAD') {
-                $scenario = 'NORMALIDAD';
-            } elseif ($criterioSelector === 'AVISO_SYNTH') {
-                $scenario = 'AVISO';
-            } elseif ($niEmActivaPlan === 'SI') {
-                $scenario = 'ACTIVACION';
-            } elseif ($isPrealerta) {
-                $scenario = 'PREALERTA';
-            } elseif ($isAviso) {
-                $scenario = 'AVISO';
-            }
-            $estadoGuardado = trim((string) ($data['estado'] ?? ''));
-            if ($estadoGuardado === '') {
-                $estadoGuardado = 'ACTIVA';
-            }
-            if (in_array($scenario, ['NORMALIDAD', 'AVISO'], true)) {
-                $estadoGuardado = 'FINALIZADA';
-            }
-
-            if ($scenario === 'ACTIVACION') {
-                $requiredInfo = trim((string) ($data['info_adicional'] ?? ''));
-                if ($requiredInfo === '') {
-                    throw ValidationException::withMessages([
-                        'info_adicional' => 'Debes completar Información Obligatoria antes de activar el plan.',
-                    ]);
-                }
-            }
-
-            DB::table('activacion_del_plan_trs')->insert([
-                'ac_de_pl-id' => $activationId,
-                'ac_de_pl-tenant_id' => $tenantId,
-                'ac_de_pl-ti_em_id-fk' => $data['ti_em_id'],
-                'ac_de_pl-rie_id-fk' => $data['rie_id'],
-                'ac_de_pl-plan_espec' => $data['plan_espec'] ?? null,
-                'ac_de_pl-ni_al_id-fk-inicial' => $data['ni_al_id'],
-                'ac_de_pl-per_id-fk-activador' => $resolvedPerId,
-                'ac_de_pl-rol_id-fk-activador' => $resolvedRolId,
-                'ac_de_pl-cargo_declarado' => $data['cargo_declarado'] ?? null,
-                'ac_de_pl-fecha_activac' => $activationDate,
-                'ac_de_pl-hora_activac' => $activationTime,
-                'ac_de_pl-estado' => $estadoGuardado,
-                'ac_de_pl-mensaje_inic' => $data['mensaje_inic'] ?? null,
-                'ac_de_pl-mensaje_simul' => $data['mensaje_simul'] ?? null,
-                'ac_de_pl-observ' => $data['observ'] ?? null,
-            ]);
-
-            $activatorGroupId = null;
-            if (Schema::hasTable('persona_rol_grupo_cfg')) {
-                $prg = DB::table('persona_rol_grupo_cfg')
-                    ->where('pe_ro_gr-per_id-fk', $resolvedPerId)
-                    ->where('pe_ro_gr-rol_id-fk', $resolvedRolId)
-                    ->first();
-                $activatorGroupId = $prg->{'pe_ro_gr-gr_op_id-fk'} ?? null;
-            }
-
-            $initialMessageNote = trim((string) ($data['mensaje_inic'] ?? ''));
-            if ($initialMessageNote !== '' && Schema::hasTable('notas_operativas_trs')) {
-                $notePayload = [
-                    'no_op-id' => 'NOOP-'.Str::uuid()->toString(),
-                    'no_op-ac_de_pl_id-fk' => $activationId,
-                    'no_op-gr_op_id-fk' => $activatorGroupId,
-                    'no_op-per_id-fk' => $resolvedPerId,
-                    'no_op-ts_nota' => $activationTs,
-                    'no_op-texto' => $initialMessageNote,
-                    'no_op-visibilidad' => 'INTERNA',
-                ];
-                if (Schema::hasColumn('notas_operativas_trs', 'no_op-tenant_id')) {
-                    $notePayload['no_op-tenant_id'] = $tenantId;
-                }
-                DB::table('notas_operativas_trs')->insert($notePayload);
-            }
-
-            if (Schema::hasTable('cronologia_emergencia_trs')) {
-                DB::table('cronologia_emergencia_trs')->insert([
-                    'cr_em-id' => 'CREM-'.Str::uuid()->toString(),
-                    'cr_em-tenant_id' => $tenantId,
-                    'cr_em-ac_de_pl_id-fk' => $activationId,
-                    'cr_em-tipo_emergencia' => $scenario,
-                    'cr_em-ts_emergencia' => $activationTs,
-                    'cr_em-per_id-fk' => $resolvedPerId,
-                    'cr_em-gr_op_id-fk' => $activatorGroupId,
-                    'cr_em-detalle' => 'Activación del plan: '.($data['mensaje_inic'] ?? 'Sin mensaje inicial'),
-                    'cr_em-ref_tabla' => 'activacion_del_plan_trs',
-                    'cr_em-referencia' => $activationId,
-                ]);
-            }
-
-            $this->auditLogger->logFromRequest($request, [
-                'event_type' => 'plan_activated',
-                'module' => 'activation',
-                'plan_id' => $activationId,
-                'entity_id' => $activationId,
-                'entity_type' => 'activacion_del_plan_trs',
-                'new_value' => [
-                    'ti_em_id' => $data['ti_em_id'],
-                    'rie_id' => $data['rie_id'],
-                    'ni_al_id' => $data['ni_al_id'],
-                    'estado' => $estadoGuardado,
-                    'scenario' => $scenario,
-                ],
-            ]);
-
-            $now = $activationTs;
-            $warnings = [];
-
-            $actionSetIds = $this->getActionSets($tenantId, $data['rie_id'], $data['ni_al_id']);
-
-            $actionSetIds = array_values(array_unique(array_filter($actionSetIds, static fn ($v) => is_string($v) && trim($v) !== '')));
-            if ($scenario === 'ACTIVACION' && empty($actionSetIds)) {
-                $warnings[] = 'No se encontraron acciones operativas configuradas para este riesgo y nivel de alerta.';
-            }
-
-            if ($scenario === 'AVISO') {
-                $actionSetIds = [];
-            }
-
-            if (Schema::hasTable('activacion_nivel_hist_trs')) {
-                DB::table('activacion_nivel_hist_trs')->insert([
-                    'ac_ni_hi-id' => 'ACNI-'.Str::uuid()->toString(),
-                    'ac_ni_hi-tenant_id' => $tenantId,
-                    'ac_ni_hi-ac_de_pl_id-fk' => $activationId,
-                    'ac_ni_hi-ni_al_id-fk' => $data['ni_al_id'],
-                    'ac_ni_hi-ac_se_id-fk' => $actionSetIds[0] ?? null,
-                    'ac_ni_hi-fech_ini' => $activationDate,
-                    'ac_ni_hi-hora_ini' => $activationTime,
-                    'ac_ni_hi-fech_fin' => null,
-                    'ac_ni_hi-hora_fin' => null,
-                    'ac_ni_hi-nivel_inicial' => 'SI',
-                    'ac_ni_hi-motivo_cambio' => null,
-                    'ac_ni_hi-per_id-fk-registrador' => $resolvedPerId,
-                    'ac_ni_hi-rol_id-fk-registrador' => $resolvedRolId,
-                    'ac_ni_hi-fuente_cambio' => 'activacion',
-                    'ac_ni_hi-observ' => null,
-                    'ac_ni_hi-activo' => 'SI',
-                    'ac_ni_hi-orden' => '1',
-                    'ac_ni_hi-cr_ri_id-fk' => null,
-                    'ac_ni_hi-valores_parametros' => null,
-                    'ac_ni_hi-ni_al_id-fk-declarado' => $data['ni_al_id'],
-                    'ac_ni_hi-fuente_decision' => 'manual',
-                    'ac_ni_hi-justificacion' => $data['justificacion'] ?? null,
-                    'ac_ni_hi-info_adicional' => $data['info_adicional'] ?? null,
-                ]);
-            }
-
-            $unassignedActions = [];
-            $ejecucionCount = 0;
-            $notificationCount = 0;
-
-            $manualAssignmentsByDetalleId = [];
-            foreach (($data['asignaciones_manuales'] ?? []) as $row) {
-                if (! is_array($row)) {
-                    continue;
-                }
-                $detalleId = trim((string) ($row['accion_detalle_id'] ?? ''));
-                if ($detalleId === '') {
-                    continue;
-                }
-                $grOpId = trim((string) ($row['gr_op_id'] ?? ''));
-                $titular = trim((string) ($row['titular_per_id'] ?? ''));
-                $suplentes = [];
-                foreach (($row['suplente_per_ids'] ?? []) as $sid) {
-                    $sidStr = trim((string) $sid);
-                    if ($sidStr !== '') {
-                        $suplentes[] = $sidStr;
+                $niEm = null;
+                if ($niAl !== null && Schema::hasTable('nivel_emergencia_cat')) {
+                    $niEmId = (string) ($niAl->{'ni_al-ni_em_id-fk'} ?? '');
+                    if ($niEmId !== '') {
+                        $niEm = DB::table('nivel_emergencia_cat')->where('ni_em-id', $niEmId)->first();
                     }
                 }
-                $suplentes = array_values(array_unique($suplentes));
 
-                if ($titular !== '' || ! empty($suplentes)) {
-                    $manualAssignmentsByDetalleId[$detalleId] = [
-                        'gr_op_id' => $grOpId !== '' ? $grOpId : null,
-                        'titular_per_id' => $titular !== '' ? $titular : null,
-                        'suplente_per_ids' => $suplentes,
-                    ];
+                $niAlCod = strtoupper(trim((string) ($niAl?->{'ni_al-cod'} ?? '')));
+                $niAlNombre = strtoupper(trim((string) ($niAl?->{'ni_al-nombre'} ?? '')));
+                $niEmActivaPlan = strtoupper(trim((string) ($niEm?->{'ni_em-activa_plan'} ?? 'NO')));
+                $criterioSelector = strtoupper(trim((string) ($data['justificacion'] ?? '')));
+
+                $isAviso = $niAlCod !== '' && (str_contains($niAlNombre, 'AVISO') || $niAlCod === 'AVISO' || $niAlCod === 'AV' || str_starts_with($niAlCod, 'AV'));
+                $isPrealerta = str_starts_with($niAlCod, 'P') || str_contains($niAlNombre, 'PREALERTA');
+
+                if ($isPrealerta && $isAviso) {
+                    $isAviso = false;
                 }
-            }
 
-            $shouldHydrate = in_array($scenario, ['ACTIVACION', 'PREALERTA'], true) && ! empty($actionSetIds);
-            if (! $shouldHydrate) {
+                $scenario = 'NORMALIDAD';
+                if ($criterioSelector === 'NORMALIDAD') {
+                    $scenario = 'NORMALIDAD';
+                } elseif ($criterioSelector === 'AVISO_SYNTH') {
+                    $scenario = 'AVISO';
+                } elseif ($niEmActivaPlan === 'SI') {
+                    $scenario = 'ACTIVACION';
+                } elseif ($isPrealerta) {
+                    $scenario = 'PREALERTA';
+                } elseif ($isAviso) {
+                    $scenario = 'AVISO';
+                }
+                $estadoGuardado = trim((string) ($data['estado'] ?? ''));
+                if ($estadoGuardado === '') {
+                    $estadoGuardado = 'ACTIVA';
+                }
+                if (in_array($scenario, ['NORMALIDAD', 'AVISO'], true)) {
+                    $estadoGuardado = 'FINALIZADA';
+                }
+
+                if ($scenario === 'ACTIVACION') {
+                    $requiredInfo = trim((string) ($data['info_adicional'] ?? ''));
+                    if ($requiredInfo === '') {
+                        throw ValidationException::withMessages([
+                            'info_adicional' => 'Debes completar Información Obligatoria antes de activar el plan.',
+                        ]);
+                    }
+                }
+
+                DB::table('activacion_del_plan_trs')->insert([
+                    'ac_de_pl-id' => $activationId,
+                    'ac_de_pl-tenant_id' => $tenantId,
+                    'ac_de_pl-ti_em_id-fk' => $data['ti_em_id'],
+                    'ac_de_pl-rie_id-fk' => $data['rie_id'],
+                    'ac_de_pl-plan_espec' => $data['plan_espec'] ?? null,
+                    'ac_de_pl-ni_al_id-fk-inicial' => $data['ni_al_id'],
+                    'ac_de_pl-per_id-fk-activador' => $resolvedPerId,
+                    'ac_de_pl-rol_id-fk-activador' => $resolvedRolId,
+                    'ac_de_pl-cargo_declarado' => $data['cargo_declarado'] ?? null,
+                    'ac_de_pl-fecha_activac' => $activationDate,
+                    'ac_de_pl-hora_activac' => $activationTime,
+                    'ac_de_pl-estado' => $estadoGuardado,
+                    'ac_de_pl-mensaje_inic' => $data['mensaje_inic'] ?? null,
+                    'ac_de_pl-mensaje_simul' => $data['mensaje_simul'] ?? null,
+                    'ac_de_pl-observ' => $data['observ'] ?? null,
+                ]);
+
+                $activatorGroupId = null;
+                if (Schema::hasTable('persona_rol_grupo_cfg')) {
+                    $prg = DB::table('persona_rol_grupo_cfg')
+                        ->where('pe_ro_gr-per_id-fk', $resolvedPerId)
+                        ->where('pe_ro_gr-rol_id-fk', $resolvedRolId)
+                        ->first();
+                    $activatorGroupId = $prg->{'pe_ro_gr-gr_op_id-fk'} ?? null;
+                }
+
+                $initialMessageNote = trim((string) ($data['mensaje_inic'] ?? ''));
+                if ($initialMessageNote !== '' && Schema::hasTable('notas_operativas_trs')) {
+                    $notePayload = [
+                        'no_op-id' => 'NOOP-' . Str::uuid()->toString(),
+                        'no_op-ac_de_pl_id-fk' => $activationId,
+                        'no_op-gr_op_id-fk' => $activatorGroupId,
+                        'no_op-per_id-fk' => $resolvedPerId,
+                        'no_op-ts_nota' => $activationTs,
+                        'no_op-texto' => $initialMessageNote,
+                        'no_op-visibilidad' => 'INTERNA',
+                    ];
+                    if (Schema::hasColumn('notas_operativas_trs', 'no_op-tenant_id')) {
+                        $notePayload['no_op-tenant_id'] = $tenantId;
+                    }
+                    DB::table('notas_operativas_trs')->insert($notePayload);
+                }
+
+                if (Schema::hasTable('cronologia_emergencia_trs')) {
+                    DB::table('cronologia_emergencia_trs')->insert([
+                        'cr_em-id' => 'CREM-' . Str::uuid()->toString(),
+                        'cr_em-tenant_id' => $tenantId,
+                        'cr_em-ac_de_pl_id-fk' => $activationId,
+                        'cr_em-tipo_emergencia' => $scenario,
+                        'cr_em-ts_emergencia' => $activationTs,
+                        'cr_em-per_id-fk' => $resolvedPerId,
+                        'cr_em-gr_op_id-fk' => $activatorGroupId,
+                        'cr_em-detalle' => 'Activación del plan: ' . ($data['mensaje_inic'] ?? 'Sin mensaje inicial'),
+                        'cr_em-ref_tabla' => 'activacion_del_plan_trs',
+                        'cr_em-referencia' => $activationId,
+                    ]);
+                }
+
+                $this->auditLogger->logFromRequest($request, [
+                    'event_type' => 'plan_activated',
+                    'module' => 'activation',
+                    'plan_id' => $activationId,
+                    'entity_id' => $activationId,
+                    'entity_type' => 'activacion_del_plan_trs',
+                    'new_value' => [
+                        'ti_em_id' => $data['ti_em_id'],
+                        'rie_id' => $data['rie_id'],
+                        'ni_al_id' => $data['ni_al_id'],
+                        'estado' => $estadoGuardado,
+                        'scenario' => $scenario,
+                    ],
+                ]);
+
+                $now = $activationTs;
+                $warnings = [];
+
+                $actionSetIds = $this->getActionSets($tenantId, $data['rie_id'], $data['ni_al_id']);
+
+                $actionSetIds = array_values(array_unique(array_filter($actionSetIds, static fn($v) => is_string($v) && trim($v) !== '')));
+                if ($scenario === 'ACTIVACION' && empty($actionSetIds)) {
+                    $warnings[] = 'No se encontraron acciones operativas configuradas para este riesgo y nivel de alerta.';
+                }
+
+                if ($scenario === 'AVISO') {
+                    $actionSetIds = [];
+                }
+
+                if (Schema::hasTable('activacion_nivel_hist_trs')) {
+                    DB::table('activacion_nivel_hist_trs')->insert([
+                        'ac_ni_hi-id' => 'ACNI-' . Str::uuid()->toString(),
+                        'ac_ni_hi-tenant_id' => $tenantId,
+                        'ac_ni_hi-ac_de_pl_id-fk' => $activationId,
+                        'ac_ni_hi-ni_al_id-fk' => $data['ni_al_id'],
+                        'ac_ni_hi-ac_se_id-fk' => $actionSetIds[0] ?? null,
+                        'ac_ni_hi-fech_ini' => $activationDate,
+                        'ac_ni_hi-hora_ini' => $activationTime,
+                        'ac_ni_hi-fech_fin' => null,
+                        'ac_ni_hi-hora_fin' => null,
+                        'ac_ni_hi-nivel_inicial' => 'SI',
+                        'ac_ni_hi-motivo_cambio' => null,
+                        'ac_ni_hi-per_id-fk-registrador' => $resolvedPerId,
+                        'ac_ni_hi-rol_id-fk-registrador' => $resolvedRolId,
+                        'ac_ni_hi-fuente_cambio' => 'activacion',
+                        'ac_ni_hi-observ' => null,
+                        'ac_ni_hi-activo' => 'SI',
+                        'ac_ni_hi-orden' => '1',
+                        'ac_ni_hi-cr_ri_id-fk' => null,
+                        'ac_ni_hi-valores_parametros' => null,
+                        'ac_ni_hi-ni_al_id-fk-declarado' => $data['ni_al_id'],
+                        'ac_ni_hi-fuente_decision' => 'manual',
+                        'ac_ni_hi-justificacion' => $data['justificacion'] ?? null,
+                        'ac_ni_hi-info_adicional' => $data['info_adicional'] ?? null,
+                    ]);
+                }
+
+                $unassignedActions = [];
+                $ejecucionCount = 0;
+                $notificationCount = 0;
+
+                $manualAssignmentsByDetalleId = [];
+                foreach (($data['asignaciones_manuales'] ?? []) as $row) {
+                    if (!is_array($row)) {
+                        continue;
+                    }
+                    $detalleId = trim((string) ($row['accion_detalle_id'] ?? ''));
+                    if ($detalleId === '') {
+                        continue;
+                    }
+                    $grOpId = trim((string) ($row['gr_op_id'] ?? ''));
+                    $titular = trim((string) ($row['titular_per_id'] ?? ''));
+                    $suplentes = [];
+                    foreach (($row['suplente_per_ids'] ?? []) as $sid) {
+                        $sidStr = trim((string) $sid);
+                        if ($sidStr !== '') {
+                            $suplentes[] = $sidStr;
+                        }
+                    }
+                    $suplentes = array_values(array_unique($suplentes));
+
+                    if ($titular !== '' || !empty($suplentes)) {
+                        $manualAssignmentsByDetalleId[$detalleId] = [
+                            'gr_op_id' => $grOpId !== '' ? $grOpId : null,
+                            'titular_per_id' => $titular !== '' ? $titular : null,
+                            'suplente_per_ids' => $suplentes,
+                        ];
+                    }
+                }
+
+                $shouldHydrate = in_array($scenario, ['ACTIVACION', 'PREALERTA'], true) && !empty($actionSetIds);
+                if (!$shouldHydrate) {
+                    return response()->json([
+                        'activation_id' => $activationId,
+                        'scenario' => $scenario,
+                        'action_set_ids' => $actionSetIds,
+                        'unassigned_actions' => [],
+                        'ejecucion_count' => 0,
+                        'notification_count' => 0,
+                        'warnings' => $warnings,
+                    ], 201);
+                }
+
+                if (!Schema::hasTable('accion_set_detalle_cfg')) {
+                    return response()->json([
+                        'message' => 'Missing accion_set_detalle_cfg table.',
+                    ], 422);
+                }
+
+                $detalles = DB::table('accion_set_detalle_cfg')
+                    ->whereIn('ac_se_de-ac_se_id-fk', $actionSetIds)
+                    ->whereRaw("UPPER(COALESCE(`ac_se_de-activo`, 'SI')) <> 'NO'")
+                    ->orderByRaw("CAST(COALESCE(`ac_se_de-ord_ejec`, '999') AS UNSIGNED) ASC")
+                    ->orderBy('ac_se_de-id')
+                    ->get();
+
+                $isSimulacro = false;
+                if (Schema::hasTable('tipo_emergencia_cat')) {
+                    $tiEm = DB::table('tipo_emergencia_cat')->where('ti_em-id', $data['ti_em_id'])->first();
+                    $tiEmCod = strtoupper(trim((string) ($tiEm?->{'ti_em-cod'} ?? '')));
+                    $tiEmNombre = strtoupper(trim((string) ($tiEm?->{'ti_em-nombre'} ?? '')));
+                    $isSimulacro = str_contains($tiEmCod, 'SIM') || str_contains($tiEmNombre, 'SIMULACRO');
+                }
+
+                $prefix = $isSimulacro ? '[SIMULACRO] ' : '';
+                $message = match ($scenario) {
+                    'PREALERTA' => $prefix . 'Aviso preventivo: Situación de Prealerta activada',
+                    'ACTIVACION' => $prefix . 'URGENTE: PLAN ACTIVADO. Confirme recepción',
+                    default => $prefix . 'Aviso',
+                };
+
+                $personaRolGrupoByRol = [];
+                $asignacionByKey = [];
+
+                foreach ($detalles as $de) {
+                    $detalleId = (string) ($de->{'ac_se_de-id'} ?? '');
+                    $rolId = $de->{'ac_se_de-rol_id-fk'} ?? null;
+
+                    $rolIdStr = trim((string) ($rolId ?? ''));
+                    $manualAssignment = $detalleId !== '' ? ($manualAssignmentsByDetalleId[$detalleId] ?? null) : null;
+                    $recipients = [];
+
+                    if ($rolIdStr !== '' && Schema::hasTable('persona_rol_grupo_cfg')) {
+                        if (!array_key_exists($rolIdStr, $personaRolGrupoByRol)) {
+                            $personaRolGrupoByRol[$rolIdStr] = DB::table('persona_rol_grupo_cfg')
+                                ->when(
+                                    Schema::hasColumn('persona_rol_grupo_cfg', 'pe_ro_gr-tenant_id'),
+                                    static fn($q) => $q->where('pe_ro_gr-tenant_id', $tenantId),
+                                )
+                                ->where('pe_ro_gr-rol_id-fk', $rolIdStr)
+                                ->whereRaw("UPPER(COALESCE(`pe_ro_gr-activo`, 'SI')) <> 'NO'")
+                                ->whereNull('pe_ro_gr-fech_fin')
+                                ->get();
+                        }
+                        $recipients = $this->resolveRoleRecipientsForActivation($personaRolGrupoByRol[$rolIdStr]);
+                    }
+
+                    if (empty($recipients) && $manualAssignment !== null) {
+                        $titularPerId = trim((string) ($manualAssignment['titular_per_id'] ?? ''));
+                        $manualGrOpId = trim((string) ($manualAssignment['gr_op_id'] ?? ''));
+                        $manualGrOpId = $manualGrOpId !== '' ? $manualGrOpId : null;
+                        if ($titularPerId !== '') {
+                            $recipients[] = [
+                                'per_id' => $titularPerId,
+                                'gr_op_id' => $manualGrOpId,
+                                'tipo_asignacion' => 'TITULAR',
+                            ];
+                        } else {
+                            $fallbackSuplente = trim((string) (($manualAssignment['suplente_per_ids'][0] ?? '')));
+                            if ($fallbackSuplente !== '') {
+                                $recipients[] = [
+                                    'per_id' => $fallbackSuplente,
+                                    'gr_op_id' => $manualGrOpId,
+                                    'tipo_asignacion' => 'SUPLENTE',
+                                ];
+                            }
+                        }
+
+                    }
+
+                    $recipients = array_values(array_filter($recipients, static function ($r) {
+                        return is_array($r) && trim((string) ($r['per_id'] ?? '')) !== '';
+                    }));
+
+                    if ($detalleId !== '' && empty($recipients)) {
+                        $unassignedActions[] = $detalleId;
+                    }
+
+                    if (Schema::hasTable('ejecucion_accion_trs') && $detalleId !== '') {
+
+                        if (empty($recipients)) {
+                            DB::table('ejecucion_accion_trs')->insert([
+                                'ej_ac-id' => 'EJAC-' . Str::uuid()->toString(),
+                                'ej_ac-tenant_id' => $tenantId,
+                                'ej_ac-ac_de_pl_id-fk' => $activationId,
+                                'ej_ac-gr_op_id-fk' => null,
+                                'ej_ac-ac_se_de_id-fk' => $detalleId,
+                                'ej_ac-as_en_fu_id-fk' => null,
+                                'ej_ac-estado' => 'PENDIENTE',
+                                'ej_ac-ts_ini' => $now,
+                                'ej_ac-ts_fin' => null,
+                                'ej_ac-observ' => null,
+                            ]);
+                            $ejecucionCount++;
+
+                            continue;
+                        }
+
+                        foreach ($recipients as $r) {
+                            if (!Schema::hasTable('asignacion_en_funciones_trs')) {
+                                $asignacionId = null;
+                            } else {
+                                $key = trim((string) $r['per_id']) . '|' . trim((string) ($r['gr_op_id'] ?? '')) . '|' . trim((string) ($r['tipo_asignacion'] ?? ''));
+                                $asignacionId = $asignacionByKey[$key] ?? null;
+
+                                if ($asignacionId === null) {
+                                    $asignacionId = 'ASEF-' . Str::uuid()->toString();
+                                    DB::table('asignacion_en_funciones_trs')->insert([
+                                        'as_en_fu-id' => $asignacionId,
+                                        'as_en_fu-tenant_id' => $tenantId,
+                                        'as_en_fu-ac_de_pl_id-fk' => $activationId,
+                                        'as_en_fu-gr_op_id-fk' => $r['gr_op_id'],
+                                        'as_en_fu-per_id-fk' => $r['per_id'],
+                                        'as_en_fu-tipo_asignacion' => $r['tipo_asignacion'],
+                                        'as_en_fu-per_id-fk-delegador' => $resolvedPerId,
+                                        'as_en_fu-motivo' => null,
+                                        'as_en_fu-ts_ini' => $now,
+                                        'as_en_fu-ts_fin' => null,
+                                        'as_en_fu-estado' => 'ACTIVA',
+                                    ]);
+
+                                    $asignacionByKey[$key] = $asignacionId;
+                                }
+                            }
+
+                            DB::table('ejecucion_accion_trs')->insert([
+                                'ej_ac-id' => 'EJAC-' . Str::uuid()->toString(),
+                                'ej_ac-tenant_id' => $tenantId,
+                                'ej_ac-ac_de_pl_id-fk' => $activationId,
+                                'ej_ac-gr_op_id-fk' => $r['gr_op_id'],
+                                'ej_ac-ac_se_de_id-fk' => $detalleId,
+                                'ej_ac-as_en_fu_id-fk' => $asignacionId,
+                                'ej_ac-estado' => 'PENDIENTE',
+                                'ej_ac-ts_ini' => $now,
+                                'ej_ac-ts_fin' => null,
+                                'ej_ac-observ' => null,
+                            ]);
+                            $ejecucionCount++;
+                        }
+                    }
+                }
+
                 return response()->json([
                     'activation_id' => $activationId,
                     'scenario' => $scenario,
                     'action_set_ids' => $actionSetIds,
-                    'unassigned_actions' => [],
-                    'ejecucion_count' => 0,
-                    'notification_count' => 0,
+                    'unassigned_actions' => array_values(array_unique($unassignedActions)),
+                    'ejecucion_count' => $ejecucionCount,
+                    'notification_count' => $notificationCount,
                     'warnings' => $warnings,
                 ], 201);
-            }
-
-            if (! Schema::hasTable('accion_set_detalle_cfg')) {
-                return response()->json([
-                    'message' => 'Missing accion_set_detalle_cfg table.',
-                ], 422);
-            }
-
-            $detalles = DB::table('accion_set_detalle_cfg')
-                ->whereIn('ac_se_de-ac_se_id-fk', $actionSetIds)
-                ->whereRaw("UPPER(COALESCE(`ac_se_de-activo`, 'SI')) <> 'NO'")
-                ->orderByRaw("CAST(COALESCE(`ac_se_de-ord_ejec`, '999') AS UNSIGNED) ASC")
-                ->orderBy('ac_se_de-id')
-                ->get();
-
-            $isSimulacro = false;
-            if (Schema::hasTable('tipo_emergencia_cat')) {
-                $tiEm = DB::table('tipo_emergencia_cat')->where('ti_em-id', $data['ti_em_id'])->first();
-                $tiEmCod = strtoupper(trim((string) ($tiEm?->{'ti_em-cod'} ?? '')));
-                $tiEmNombre = strtoupper(trim((string) ($tiEm?->{'ti_em-nombre'} ?? '')));
-                $isSimulacro = str_contains($tiEmCod, 'SIM') || str_contains($tiEmNombre, 'SIMULACRO');
-            }
-
-            $prefix = $isSimulacro ? '[SIMULACRO] ' : '';
-            $message = match ($scenario) {
-                'PREALERTA' => $prefix.'Aviso preventivo: Situación de Prealerta activada',
-                'ACTIVACION' => $prefix.'URGENTE: PLAN ACTIVADO. Confirme recepción',
-                default => $prefix.'Aviso',
-            };
-
-            $personaRolGrupoByRol = [];
-            $asignacionByKey = [];
-
-            foreach ($detalles as $de) {
-                $detalleId = (string) ($de->{'ac_se_de-id'} ?? '');
-                $rolId = $de->{'ac_se_de-rol_id-fk'} ?? null;
-
-                $rolIdStr = trim((string) ($rolId ?? ''));
-                $manualAssignment = $detalleId !== '' ? ($manualAssignmentsByDetalleId[$detalleId] ?? null) : null;
-                $recipients = [];
-
-                if ($rolIdStr !== '' && Schema::hasTable('persona_rol_grupo_cfg')) {
-                    if (! array_key_exists($rolIdStr, $personaRolGrupoByRol)) {
-                        $personaRolGrupoByRol[$rolIdStr] = DB::table('persona_rol_grupo_cfg')
-                            ->when(
-                                Schema::hasColumn('persona_rol_grupo_cfg', 'pe_ro_gr-tenant_id'),
-                                static fn ($q) => $q->where('pe_ro_gr-tenant_id', $tenantId),
-                            )
-                            ->where('pe_ro_gr-rol_id-fk', $rolIdStr)
-                            ->whereRaw("UPPER(COALESCE(`pe_ro_gr-activo`, 'SI')) <> 'NO'")
-                            ->whereNull('pe_ro_gr-fech_fin')
-                            ->get();
-                    }
-                    $recipients = $this->resolveRoleRecipientsForActivation($personaRolGrupoByRol[$rolIdStr]);
-                }
-
-                if (empty($recipients) && $manualAssignment !== null) {
-                    $titularPerId = trim((string) ($manualAssignment['titular_per_id'] ?? ''));
-                    $manualGrOpId = trim((string) ($manualAssignment['gr_op_id'] ?? ''));
-                    $manualGrOpId = $manualGrOpId !== '' ? $manualGrOpId : null;
-                    if ($titularPerId !== '') {
-                        $recipients[] = [
-                            'per_id' => $titularPerId,
-                            'gr_op_id' => $manualGrOpId,
-                            'tipo_asignacion' => 'TITULAR',
-                        ];
-                    } else {
-                        $fallbackSuplente = trim((string) (($manualAssignment['suplente_per_ids'][0] ?? '')));
-                        if ($fallbackSuplente !== '') {
-                            $recipients[] = [
-                                'per_id' => $fallbackSuplente,
-                                'gr_op_id' => $manualGrOpId,
-                                'tipo_asignacion' => 'SUPLENTE',
-                            ];
-                        }
-                    }
-
-                }
-
-                $recipients = array_values(array_filter($recipients, static function ($r) {
-                    return is_array($r) && trim((string) ($r['per_id'] ?? '')) !== '';
-                }));
-
-                if ($detalleId !== '' && empty($recipients)) {
-                    $unassignedActions[] = $detalleId;
-                }
-
-                if (Schema::hasTable('ejecucion_accion_trs') && $detalleId !== '') {
-
-                    if (empty($recipients)) {
-                        DB::table('ejecucion_accion_trs')->insert([
-                            'ej_ac-id' => 'EJAC-'.Str::uuid()->toString(),
-                            'ej_ac-tenant_id' => $tenantId,
-                            'ej_ac-ac_de_pl_id-fk' => $activationId,
-                            'ej_ac-gr_op_id-fk' => null,
-                            'ej_ac-ac_se_de_id-fk' => $detalleId,
-                            'ej_ac-as_en_fu_id-fk' => null,
-                            'ej_ac-estado' => 'PENDIENTE',
-                            'ej_ac-ts_ini' => $now,
-                            'ej_ac-ts_fin' => null,
-                            'ej_ac-observ' => null,
-                        ]);
-                        $ejecucionCount++;
-
-                        continue;
-                    }
-
-                    foreach ($recipients as $r) {
-                        if (! Schema::hasTable('asignacion_en_funciones_trs')) {
-                            $asignacionId = null;
-                        } else {
-                            $key = trim((string) $r['per_id']).'|'.trim((string) ($r['gr_op_id'] ?? '')).'|'.trim((string) ($r['tipo_asignacion'] ?? ''));
-                            $asignacionId = $asignacionByKey[$key] ?? null;
-
-                            if ($asignacionId === null) {
-                                $asignacionId = 'ASEF-'.Str::uuid()->toString();
-                                DB::table('asignacion_en_funciones_trs')->insert([
-                                    'as_en_fu-id' => $asignacionId,
-                                    'as_en_fu-tenant_id' => $tenantId,
-                                    'as_en_fu-ac_de_pl_id-fk' => $activationId,
-                                    'as_en_fu-gr_op_id-fk' => $r['gr_op_id'],
-                                    'as_en_fu-per_id-fk' => $r['per_id'],
-                                    'as_en_fu-tipo_asignacion' => $r['tipo_asignacion'],
-                                    'as_en_fu-per_id-fk-delegador' => $resolvedPerId,
-                                    'as_en_fu-motivo' => null,
-                                    'as_en_fu-ts_ini' => $now,
-                                    'as_en_fu-ts_fin' => null,
-                                    'as_en_fu-estado' => 'ACTIVA',
-                                ]);
-
-                                $asignacionByKey[$key] = $asignacionId;
-                            }
-                        }
-
-                        DB::table('ejecucion_accion_trs')->insert([
-                            'ej_ac-id' => 'EJAC-'.Str::uuid()->toString(),
-                            'ej_ac-tenant_id' => $tenantId,
-                            'ej_ac-ac_de_pl_id-fk' => $activationId,
-                            'ej_ac-gr_op_id-fk' => $r['gr_op_id'],
-                            'ej_ac-ac_se_de_id-fk' => $detalleId,
-                            'ej_ac-as_en_fu_id-fk' => $asignacionId,
-                            'ej_ac-estado' => 'PENDIENTE',
-                            'ej_ac-ts_ini' => $now,
-                            'ej_ac-ts_fin' => null,
-                            'ej_ac-observ' => null,
-                        ]);
-                        $ejecucionCount++;
-                    }
-                }
-            }
-
-            return response()->json([
-                'activation_id' => $activationId,
-                'scenario' => $scenario,
-                'action_set_ids' => $actionSetIds,
-                'unassigned_actions' => array_values(array_unique($unassignedActions)),
-                'ejecucion_count' => $ejecucionCount,
-                'notification_count' => $notificationCount,
-                'warnings' => $warnings,
-            ], 201);
             } catch (\Throwable $e) {
                 file_put_contents(public_path('last_activation_error.txt'), $e->getMessage() . "\n" . $e->getTraceAsString());
                 throw $e;
@@ -530,158 +531,84 @@ class ActivationController extends Controller
         $accionDetalleId = trim((string) ($validated['accion_detalle_id'] ?? ''));
         $resolveOnly = (bool) ($validated['resolve_only'] ?? false);
         $targetEmails = array_values(array_unique(array_values(array_filter(array_map(
-            static fn ($e) => strtolower(trim((string) $e)),
+            static fn($e) => strtolower(trim((string) $e)),
             is_array($validated['recipient_emails'] ?? null) ? $validated['recipient_emails'] : [],
-        ), static fn ($email) => $email !== ''))));
+        ), static fn($email) => $email !== ''))));
         try {
 
-        if (
-            ! Schema::hasTable('ejecucion_accion_trs')
-            || ! Schema::hasTable('asignacion_en_funciones_trs')
-            || ! Schema::hasTable('accion_set_detalle_cfg')
-        ) {
-            return response()->json(['message' => 'Missing required tables.'], 422);
-        }
+            if (
+                !Schema::hasTable('ejecucion_accion_trs')
+                || !Schema::hasTable('asignacion_en_funciones_trs')
+                || !Schema::hasTable('accion_set_detalle_cfg')
+            ) {
+                return response()->json(['message' => 'Missing required tables.'], 422);
+            }
 
-        $rows = DB::table('ejecucion_accion_trs as ej')
-            ->join('asignacion_en_funciones_trs as asg', 'asg.as_en_fu-id', '=', 'ej.ej_ac-as_en_fu_id-fk')
-            ->join('accion_set_detalle_cfg as de', 'de.ac_se_de-id', '=', 'ej.ej_ac-ac_se_de_id-fk')
-            ->leftJoin('accion_operativa_cfg as ac', 'ac.ac_op-id', '=', 'de.ac_se_de-ac_op_id-fk')
-            ->leftJoin('persona_mst as p', 'p.per-id', '=', 'asg.as_en_fu-per_id-fk')
-            ->where('ej.ej_ac-tenant_id', $tenantId)
-            ->where('ej.ej_ac-ac_de_pl_id-fk', $activationId)
-            ->when($accionDetalleId !== '', static fn ($q) => $q->where('de.ac_se_de-id', $accionDetalleId))
-            ->orderByRaw("CAST(COALESCE(`de`.`ac_se_de-ord_ejec`, '999') AS UNSIGNED) ASC")
-            ->orderBy('de.ac_se_de-id')
-            ->get([
-                'ej.ej_ac-id as ejecucion_id',
-                'ej.ej_ac-estado as ejecucion_estado',
-                'asg.as_en_fu-per_id-fk as per_id',
-                'asg.as_en_fu-tipo_asignacion as tipo_asignacion',
-                'de.ac_se_de-rol_id-fk as rol_id',
-                'p.per-email as email',
-                'p.per-tel_mov as tel_mov',
-                'p.per-nombre as nombre',
-                'p.per-apellido_1 as apellido_1',
-                'p.per-apellido_2 as apellido_2',
-                'ac.ac_op-id as accion_operativa_id',
-                'ac.ac_op-descrip as accion_descrip',
-                'ac.ac_op-cod as accion_cod',
-                'de.ac_se_de-id as accion_detalle_id',
-            ]);
-
-        $tenant = Tenant::query()->firstOrCreate(
-            ['tenant_id' => $tenantId],
-            ['name' => $tenantId, 'default_language' => 'es'],
-        );
-        $productionMode = (bool) ($tenant?->notifications_production_mode ?? false);
-        $channels = $this->resolveNotificationChannels($tenant);
-        $emailNotificationsEnabled = (bool) ($channels['email_enabled'] ?? false);
-        $whatsappNotificationsEnabled = (bool) ($channels['whatsapp_enabled'] ?? false);
-
-        $byPerson = [];
-        $actionsByRole = [];
-        $appendAction = static function (array &$person, array $action): void {
-            $idx = trim((string) ($action['accion_detalle_id'] ?? '')).'|'.trim((string) ($action['ejecucion_id'] ?? ''));
-            if ($idx === '|') {
-                return;
-            }
-            $person['acciones_index'][$idx] = true;
-            $person['acciones'][] = $action;
-        };
-        foreach ($rows as $r) {
-            $perId = trim((string) ($r->per_id ?? ''));
-            if ($perId === '') {
-                continue;
-            }
-            $email = strtolower(trim((string) ($r->email ?? '')));
-            $telMov = trim((string) ($r->tel_mov ?? ''));
-            $nombre = trim(implode(' ', array_filter([
-                (string) ($r->nombre ?? ''),
-                (string) ($r->apellido_1 ?? ''),
-                (string) ($r->apellido_2 ?? ''),
-            ])));
-            $accion = trim((string) ($r->accion_descrip ?? '')) ?: trim((string) ($r->accion_cod ?? '')) ?: trim((string) ($r->accion_detalle_id ?? ''));
-            $tipo = strtoupper(trim((string) ($r->tipo_asignacion ?? 'SUPLENTE')));
-            if ($tipo !== 'TITULAR') {
-                $tipo = 'SUPLENTE';
-            }
-            $rolId = trim((string) ($r->rol_id ?? ''));
-
-            $byPerson[$perId] ??= [
-                'per_id' => $perId,
-                'email' => $email !== '' ? $email : null,
-                'tel_mov' => $telMov !== '' ? $telMov : null,
-                'nombre' => $nombre !== '' ? $nombre : $perId,
-                'acciones' => [],
-                'acciones_index' => [],
-            ];
-            if (($byPerson[$perId]['email'] ?? null) === null && $email !== '') {
-                $byPerson[$perId]['email'] = $email;
-            }
-            if (($byPerson[$perId]['tel_mov'] ?? null) === null && $telMov !== '') {
-                $byPerson[$perId]['tel_mov'] = $telMov;
-            }
-            if (($byPerson[$perId]['nombre'] ?? '') === $perId && $nombre !== '') {
-                $byPerson[$perId]['nombre'] = $nombre;
-            }
-            $actionPayload = [
-                'ejecucion_id' => (string) ($r->ejecucion_id ?? ''),
-                'accion_detalle_id' => (string) ($r->accion_detalle_id ?? ''),
-                'accion_operativa_id' => (string) ($r->accion_operativa_id ?? ''),
-                'accion_operativa_cod' => (string) ($r->accion_cod ?? ''),
-                'accion_operativa_descrip' => (string) ($r->accion_descrip ?? ''),
-                'accion' => $accion,
-                'tipo_asignacion' => $tipo,
-                'estado' => (string) ($r->ejecucion_estado ?? ''),
-            ];
-            $appendAction($byPerson[$perId], $actionPayload);
-            if ($rolId !== '') {
-                $actionsByRole[$rolId] ??= [];
-                $actionsByRole[$rolId][] = $actionPayload;
-            }
-        }
-
-        if ($productionMode && ! empty($actionsByRole) && Schema::hasTable('persona_rol_grupo_cfg') && Schema::hasTable('persona_mst')) {
-            $roleIds = array_keys($actionsByRole);
-            $roleRows = DB::table('persona_rol_grupo_cfg as prg')
-                ->join('persona_mst as p', 'p.per-id', '=', 'prg.pe_ro_gr-per_id-fk')
-                ->whereIn('prg.pe_ro_gr-rol_id-fk', $roleIds)
-                ->whereRaw("UPPER(COALESCE(`prg`.`pe_ro_gr-activo`, 'SI')) <> 'NO'")
-                ->whereNull('prg.pe_ro_gr-fech_fin')
+            $rows = DB::table('ejecucion_accion_trs as ej')
+                ->join('asignacion_en_funciones_trs as asg', 'asg.as_en_fu-id', '=', 'ej.ej_ac-as_en_fu_id-fk')
+                ->join('accion_set_detalle_cfg as de', 'de.ac_se_de-id', '=', 'ej.ej_ac-ac_se_de_id-fk')
+                ->leftJoin('accion_operativa_cfg as ac', 'ac.ac_op-id', '=', 'de.ac_se_de-ac_op_id-fk')
+                ->leftJoin('persona_mst as p', 'p.per-id', '=', 'asg.as_en_fu-per_id-fk')
+                ->where('ej.ej_ac-tenant_id', $tenantId)
+                ->where('ej.ej_ac-ac_de_pl_id-fk', $activationId)
+                ->when($accionDetalleId !== '', static fn($q) => $q->where('de.ac_se_de-id', $accionDetalleId))
+                ->orderByRaw("CAST(COALESCE(`de`.`ac_se_de-ord_ejec`, '999') AS UNSIGNED) ASC")
+                ->orderBy('de.ac_se_de-id')
                 ->get([
-                    'prg.pe_ro_gr-rol_id-fk as rol_id',
-                    'prg.pe_ro_gr-per_id-fk as per_id',
-                    'prg.pe_ro_gr-tipo_asignacion as tipo_asignacion',
+                    'ej.ej_ac-id as ejecucion_id',
+                    'ej.ej_ac-estado as ejecucion_estado',
+                    'asg.as_en_fu-per_id-fk as per_id',
+                    'asg.as_en_fu-tipo_asignacion as tipo_asignacion',
+                    'de.ac_se_de-rol_id-fk as rol_id',
                     'p.per-email as email',
                     'p.per-tel_mov as tel_mov',
                     'p.per-nombre as nombre',
                     'p.per-apellido_1 as apellido_1',
                     'p.per-apellido_2 as apellido_2',
+                    'ac.ac_op-id as accion_operativa_id',
+                    'ac.ac_op-descrip as accion_descrip',
+                    'ac.ac_op-cod as accion_cod',
+                    'de.ac_se_de-id as accion_detalle_id',
                 ]);
-            foreach ($roleRows as $rr) {
-                $rolId = trim((string) ($rr->rol_id ?? ''));
-                $perId = trim((string) ($rr->per_id ?? ''));
-                if ($rolId === '' || $perId === '') {
+
+            $tenant = Tenant::query()->firstOrCreate(
+                ['tenant_id' => $tenantId],
+                ['name' => $tenantId, 'default_language' => 'es'],
+            );
+            $productionMode = (bool) ($tenant?->notifications_production_mode ?? false);
+            $channels = $this->resolveNotificationChannels($tenant);
+            $emailNotificationsEnabled = (bool) ($channels['email_enabled'] ?? false);
+            $whatsappNotificationsEnabled = (bool) ($channels['whatsapp_enabled'] ?? false);
+
+            $byPerson = [];
+            $actionsByRole = [];
+            $appendAction = static function (array &$person, array $action): void {
+                $idx = trim((string) ($action['accion_detalle_id'] ?? '')) . '|' . trim((string) ($action['ejecucion_id'] ?? ''));
+                if ($idx === '|') {
+                    return;
+                }
+                $person['acciones_index'][$idx] = true;
+                $person['acciones'][] = $action;
+            };
+            foreach ($rows as $r) {
+                $perId = trim((string) ($r->per_id ?? ''));
+                if ($perId === '') {
                     continue;
                 }
-                $tipo = strtoupper(trim((string) ($rr->tipo_asignacion ?? 'SUPLENTE')));
-                if ($tipo === '') {
+                $email = strtolower(trim((string) ($r->email ?? '')));
+                $telMov = trim((string) ($r->tel_mov ?? ''));
+                $nombre = trim(implode(' ', array_filter([
+                    (string) ($r->nombre ?? ''),
+                    (string) ($r->apellido_1 ?? ''),
+                    (string) ($r->apellido_2 ?? ''),
+                ])));
+                $accion = trim((string) ($r->accion_descrip ?? '')) ?: trim((string) ($r->accion_cod ?? '')) ?: trim((string) ($r->accion_detalle_id ?? ''));
+                $tipo = strtoupper(trim((string) ($r->tipo_asignacion ?? 'SUPLENTE')));
+                if ($tipo !== 'TITULAR') {
                     $tipo = 'SUPLENTE';
                 }
-                if ($tipo === 'LIDER') {
-                    $tipo = 'TITULAR';
-                }
-                if ($tipo !== 'TITULAR' && $tipo !== 'SUPLENTE') {
-                    continue;
-                }
-                $email = strtolower(trim((string) ($rr->email ?? '')));
-                $telMov = trim((string) ($rr->tel_mov ?? ''));
-                $nombre = trim(implode(' ', array_filter([
-                    (string) ($rr->nombre ?? ''),
-                    (string) ($rr->apellido_1 ?? ''),
-                    (string) ($rr->apellido_2 ?? ''),
-                ])));
+                $rolId = trim((string) ($r->rol_id ?? ''));
+
                 $byPerson[$perId] ??= [
                     'per_id' => $perId,
                     'email' => $email !== '' ? $email : null,
@@ -699,978 +626,1005 @@ class ActivationController extends Controller
                 if (($byPerson[$perId]['nombre'] ?? '') === $perId && $nombre !== '') {
                     $byPerson[$perId]['nombre'] = $nombre;
                 }
-                foreach (($actionsByRole[$rolId] ?? []) as $actionPayload) {
-                    $appendAction($byPerson[$perId], $actionPayload);
+                $actionPayload = [
+                    'ejecucion_id' => (string) ($r->ejecucion_id ?? ''),
+                    'accion_detalle_id' => (string) ($r->accion_detalle_id ?? ''),
+                    'accion_operativa_id' => (string) ($r->accion_operativa_id ?? ''),
+                    'accion_operativa_cod' => (string) ($r->accion_cod ?? ''),
+                    'accion_operativa_descrip' => (string) ($r->accion_descrip ?? ''),
+                    'accion' => $accion,
+                    'tipo_asignacion' => $tipo,
+                    'estado' => (string) ($r->ejecucion_estado ?? ''),
+                ];
+                $appendAction($byPerson[$perId], $actionPayload);
+                if ($rolId !== '') {
+                    $actionsByRole[$rolId] ??= [];
+                    $actionsByRole[$rolId][] = $actionPayload;
                 }
             }
-        }
 
-        if (Schema::hasTable('users')) {
-            $usersQuery = DB::table('users as u')
-                ->where('u.tenant_id', $tenantId)
-                ->whereIn(DB::raw('LOWER(TRIM(u.perfil))'), ['recurso', 'director']);
-            if (Schema::hasColumn('users', 'is_active')) {
-                $usersQuery->where('u.is_active', true);
-            }
-            $select = ['u.id as user_id', 'u.email as user_email', 'u.name as user_name', 'u.perfil as user_perfil'];
-            $hasPersonaId = Schema::hasColumn('users', 'persona_id');
-            if ($hasPersonaId) {
-                $select[] = 'u.persona_id';
-            }
-            if ($hasPersonaId && Schema::hasTable('persona_mst')) {
-                $usersQuery->leftJoin('persona_mst as p', 'p.per-id', '=', 'u.persona_id');
-                if (Schema::hasColumn('persona_mst', 'per-tenant_id')) {
-                    $usersQuery->where(function ($q) use ($tenantId) {
-                        $q->where('p.per-tenant_id', $tenantId)->orWhereNull('p.per-id');
-                    });
-                }
-                if (Schema::hasColumn('persona_mst', 'per-activo')) {
-                    $usersQuery->where(function ($q) {
-                        $q->whereRaw("UPPER(COALESCE(`p`.`per-activo`, 'SI')) <> 'NO'")->orWhereNull('p.per-id');
-                    });
-                }
-                $select[] = 'p.per-id as per_id';
-                $select[] = 'p.per-email as per_email';
-                $select[] = 'p.per-tel_mov as tel_mov';
-                $select[] = 'p.per-nombre as per_nombre';
-                $select[] = 'p.per-apellido_1 as per_apellido_1';
-                $select[] = 'p.per-apellido_2 as per_apellido_2';
-            }
-            $allUsersRows = $usersQuery->get($select);
-            foreach ($allUsersRows as $ur) {
-                $perId = trim((string) ($ur->per_id ?? ''));
-                if ($perId === '') {
-                    $userId = trim((string) ($ur->user_id ?? ''));
-                    if ($userId === '') {
+            if ($productionMode && !empty($actionsByRole) && Schema::hasTable('persona_rol_grupo_cfg') && Schema::hasTable('persona_mst')) {
+                $roleIds = array_keys($actionsByRole);
+                $roleRows = DB::table('persona_rol_grupo_cfg as prg')
+                    ->join('persona_mst as p', 'p.per-id', '=', 'prg.pe_ro_gr-per_id-fk')
+                    ->whereIn('prg.pe_ro_gr-rol_id-fk', $roleIds)
+                    ->whereRaw("UPPER(COALESCE(`prg`.`pe_ro_gr-activo`, 'SI')) <> 'NO'")
+                    ->whereNull('prg.pe_ro_gr-fech_fin')
+                    ->get([
+                        'prg.pe_ro_gr-rol_id-fk as rol_id',
+                        'prg.pe_ro_gr-per_id-fk as per_id',
+                        'prg.pe_ro_gr-tipo_asignacion as tipo_asignacion',
+                        'p.per-email as email',
+                        'p.per-tel_mov as tel_mov',
+                        'p.per-nombre as nombre',
+                        'p.per-apellido_1 as apellido_1',
+                        'p.per-apellido_2 as apellido_2',
+                    ]);
+                foreach ($roleRows as $rr) {
+                    $rolId = trim((string) ($rr->rol_id ?? ''));
+                    $perId = trim((string) ($rr->per_id ?? ''));
+                    if ($rolId === '' || $perId === '') {
                         continue;
                     }
-                    $perId = 'USR:'.$userId;
-                }
-                $email = strtolower(trim((string) (($ur->per_email ?? null) ?: ($ur->user_email ?? ''))));
-                $telMov = trim((string) ($ur->tel_mov ?? ''));
-                $nombre = trim(implode(' ', array_filter([
-                    (string) ($ur->per_nombre ?? ''),
-                    (string) ($ur->per_apellido_1 ?? ''),
-                    (string) ($ur->per_apellido_2 ?? ''),
-                ])));
-                if ($nombre === '') {
-                    $nombre = trim((string) ($ur->user_name ?? ''));
-                }
-                $byPerson[$perId] ??= [
-                    'per_id' => $perId,
-                    'email' => $email !== '' ? $email : null,
-                    'tel_mov' => $telMov !== '' ? $telMov : null,
-                    'nombre' => $nombre !== '' ? $nombre : $perId,
-                    'acciones' => [],
-                    'acciones_index' => [],
-                ];
-                if (($byPerson[$perId]['email'] ?? null) === null && $email !== '') {
-                    $byPerson[$perId]['email'] = $email;
-                }
-                if (($byPerson[$perId]['tel_mov'] ?? null) === null && $telMov !== '') {
-                    $byPerson[$perId]['tel_mov'] = $telMov;
-                }
-                if (($byPerson[$perId]['nombre'] ?? '') === $perId && $nombre !== '') {
-                    $byPerson[$perId]['nombre'] = $nombre;
-                }
-            }
-        }
-
-        foreach ($byPerson as $perId => $person) {
-            if (isset($person['acciones_index'])) {
-                unset($person['acciones_index']);
-            }
-            $byPerson[$perId] = $person;
-        }
-
-        $people = array_values($byPerson);
-        if (! empty($targetEmails)) {
-            $targetSet = array_flip($targetEmails);
-            $people = array_values(array_filter($people, static function ($p) use ($targetSet) {
-                $email = strtolower(trim((string) ($p['email'] ?? '')));
-                if ($email === '') {
-                    return false;
-                }
-                return isset($targetSet[$email]);
-            }));
-        }
-        if ($resolveOnly) {
-            return response()->json([
-                'message' => 'RESOLVED',
-                'mode' => 'mail',
-                'sent' => 0,
-                'files_written' => 0,
-                'recipients' => count($people),
-                'recipient_emails' => array_values(array_unique(array_values(array_filter(array_map(
-                    static fn ($p) => strtolower(trim((string) ($p['email'] ?? ''))),
-                    $people,
-                ), static fn ($email) => $email !== '')))),
-                'sent_recipient_emails' => [],
-                'failed_recipients' => [],
-                'warnings' => [],
-                'debug' => [
-                    'resolve_only' => true,
-                    'email_notifications_enabled' => $emailNotificationsEnabled,
-                    'target_filter_count' => count($targetEmails),
-                    'resolved_people_count' => count($people),
-                ],
-            ]);
-        }
-
-        $modoLabel = $productionMode ? 'PRODUCCION' : 'PRUEBA';
-        $subjectPrefix = $productionMode ? '' : '[PRUEBA] ';
-        $testEmails = [];
-        if (! $productionMode) {
-            $raw = $tenant?->test_notification_emails;
-            $rawArr = is_array($raw) ? $raw : [];
-            $emails = [];
-            foreach ($rawArr as $e) {
-                $e = strtolower(trim((string) $e));
-                if ($e !== '') {
-                    $emails[] = $e;
+                    $tipo = strtoupper(trim((string) ($rr->tipo_asignacion ?? 'SUPLENTE')));
+                    if ($tipo === '') {
+                        $tipo = 'SUPLENTE';
+                    }
+                    if ($tipo === 'LIDER') {
+                        $tipo = 'TITULAR';
+                    }
+                    if ($tipo !== 'TITULAR' && $tipo !== 'SUPLENTE') {
+                        continue;
+                    }
+                    $email = strtolower(trim((string) ($rr->email ?? '')));
+                    $telMov = trim((string) ($rr->tel_mov ?? ''));
+                    $nombre = trim(implode(' ', array_filter([
+                        (string) ($rr->nombre ?? ''),
+                        (string) ($rr->apellido_1 ?? ''),
+                        (string) ($rr->apellido_2 ?? ''),
+                    ])));
+                    $byPerson[$perId] ??= [
+                        'per_id' => $perId,
+                        'email' => $email !== '' ? $email : null,
+                        'tel_mov' => $telMov !== '' ? $telMov : null,
+                        'nombre' => $nombre !== '' ? $nombre : $perId,
+                        'acciones' => [],
+                        'acciones_index' => [],
+                    ];
+                    if (($byPerson[$perId]['email'] ?? null) === null && $email !== '') {
+                        $byPerson[$perId]['email'] = $email;
+                    }
+                    if (($byPerson[$perId]['tel_mov'] ?? null) === null && $telMov !== '') {
+                        $byPerson[$perId]['tel_mov'] = $telMov;
+                    }
+                    if (($byPerson[$perId]['nombre'] ?? '') === $perId && $nombre !== '') {
+                        $byPerson[$perId]['nombre'] = $nombre;
+                    }
+                    foreach (($actionsByRole[$rolId] ?? []) as $actionPayload) {
+                        $appendAction($byPerson[$perId], $actionPayload);
+                    }
                 }
             }
-            $testEmails = array_values(array_unique($emails));
-        }
 
-        $testWhatsappNumbers = [];
-        if (! $productionMode) {
-            $testWhatsappNumbers = $this->parseWhatsappNumbers($tenant?->test_notification_whatsapp_numbers);
-        }
-        $testSmsNumbers = [];
-        if (! $productionMode) {
-            $testSmsNumbers = $this->parseSmsNumbers($tenant?->test_notification_sms_numbers);
-        }
+            if (Schema::hasTable('users')) {
+                $usersQuery = DB::table('users as u')
+                    ->where('u.tenant_id', $tenantId)
+                    ->whereIn(DB::raw('LOWER(TRIM(u.perfil))'), ['recurso', 'director']);
+                if (Schema::hasColumn('users', 'is_active')) {
+                    $usersQuery->where('u.is_active', true);
+                }
+                $select = ['u.id as user_id', 'u.email as user_email', 'u.name as user_name', 'u.perfil as user_perfil'];
+                $hasPersonaId = Schema::hasColumn('users', 'persona_id');
+                if ($hasPersonaId) {
+                    $select[] = 'u.persona_id';
+                }
+                if ($hasPersonaId && Schema::hasTable('persona_mst')) {
+                    $usersQuery->leftJoin('persona_mst as p', 'p.per-id', '=', 'u.persona_id');
+                    if (Schema::hasColumn('persona_mst', 'per-tenant_id')) {
+                        $usersQuery->where(function ($q) use ($tenantId) {
+                            $q->where('p.per-tenant_id', $tenantId)->orWhereNull('p.per-id');
+                        });
+                    }
+                    if (Schema::hasColumn('persona_mst', 'per-activo')) {
+                        $usersQuery->where(function ($q) {
+                            $q->whereRaw("UPPER(COALESCE(`p`.`per-activo`, 'SI')) <> 'NO'")->orWhereNull('p.per-id');
+                        });
+                    }
+                    $select[] = 'p.per-id as per_id';
+                    $select[] = 'p.per-email as per_email';
+                    $select[] = 'p.per-tel_mov as tel_mov';
+                    $select[] = 'p.per-nombre as per_nombre';
+                    $select[] = 'p.per-apellido_1 as per_apellido_1';
+                    $select[] = 'p.per-apellido_2 as per_apellido_2';
+                }
+                $allUsersRows = $usersQuery->get($select);
+                foreach ($allUsersRows as $ur) {
+                    $perId = trim((string) ($ur->per_id ?? ''));
+                    if ($perId === '') {
+                        $userId = trim((string) ($ur->user_id ?? ''));
+                        if ($userId === '') {
+                            continue;
+                        }
+                        $perId = 'USR:' . $userId;
+                    }
+                    $email = strtolower(trim((string) (($ur->per_email ?? null) ?: ($ur->user_email ?? ''))));
+                    $telMov = trim((string) ($ur->tel_mov ?? ''));
+                    $nombre = trim(implode(' ', array_filter([
+                        (string) ($ur->per_nombre ?? ''),
+                        (string) ($ur->per_apellido_1 ?? ''),
+                        (string) ($ur->per_apellido_2 ?? ''),
+                    ])));
+                    if ($nombre === '') {
+                        $nombre = trim((string) ($ur->user_name ?? ''));
+                    }
+                    $byPerson[$perId] ??= [
+                        'per_id' => $perId,
+                        'email' => $email !== '' ? $email : null,
+                        'tel_mov' => $telMov !== '' ? $telMov : null,
+                        'nombre' => $nombre !== '' ? $nombre : $perId,
+                        'acciones' => [],
+                        'acciones_index' => [],
+                    ];
+                    if (($byPerson[$perId]['email'] ?? null) === null && $email !== '') {
+                        $byPerson[$perId]['email'] = $email;
+                    }
+                    if (($byPerson[$perId]['tel_mov'] ?? null) === null && $telMov !== '') {
+                        $byPerson[$perId]['tel_mov'] = $telMov;
+                    }
+                    if (($byPerson[$perId]['nombre'] ?? '') === $perId && $nombre !== '') {
+                        $byPerson[$perId]['nombre'] = $nombre;
+                    }
+                }
+            }
 
-        $mode = $this->resolveNotificationMode();
-        $warnings = [];
-        $mailerName = (string) config('mail.default', 'log');
-        $smtpConfigured = $mailerName === 'smtp'
-            && trim((string) config('mail.mailers.smtp.host', '')) !== ''
-            && trim((string) config('mail.mailers.smtp.username', '')) !== '';
-        if ($productionMode && ! $smtpConfigured) {
-            $warnings[] = 'Configuración recomendada: usar SMTP autenticado (MAIL_MAILER=smtp + credenciales) para mejorar entrega y evitar rate limit.';
-            Log::warning('Activation email notifications are not using authenticated SMTP', [
+            foreach ($byPerson as $perId => $person) {
+                if (isset($person['acciones_index'])) {
+                    unset($person['acciones_index']);
+                }
+                $byPerson[$perId] = $person;
+            }
+
+            $people = array_values($byPerson);
+            if (!empty($targetEmails)) {
+                $targetSet = array_flip($targetEmails);
+                $people = array_values(array_filter($people, static function ($p) use ($targetSet) {
+                    $email = strtolower(trim((string) ($p['email'] ?? '')));
+                    if ($email === '') {
+                        return false;
+                    }
+                    return isset($targetSet[$email]);
+                }));
+            }
+            if ($resolveOnly) {
+                return response()->json([
+                    'message' => 'RESOLVED',
+                    'mode' => 'mail',
+                    'sent' => 0,
+                    'files_written' => 0,
+                    'recipients' => count($people),
+                    'recipient_emails' => array_values(array_unique(array_values(array_filter(array_map(
+                        static fn($p) => strtolower(trim((string) ($p['email'] ?? ''))),
+                        $people,
+                    ), static fn($email) => $email !== '')))),
+                    'sent_recipient_emails' => [],
+                    'failed_recipients' => [],
+                    'warnings' => [],
+                    'debug' => [
+                        'resolve_only' => true,
+                        'email_notifications_enabled' => $emailNotificationsEnabled,
+                        'target_filter_count' => count($targetEmails),
+                        'resolved_people_count' => count($people),
+                    ],
+                ]);
+            }
+
+            $modoLabel = $productionMode ? 'PRODUCCION' : 'PRUEBA';
+            $subjectPrefix = $productionMode ? '' : '[PRUEBA] ';
+            $testEmails = [];
+            if (!$productionMode) {
+                $raw = $tenant?->test_notification_emails;
+                $rawArr = is_array($raw) ? $raw : [];
+                $emails = [];
+                foreach ($rawArr as $e) {
+                    $e = strtolower(trim((string) $e));
+                    if ($e !== '') {
+                        $emails[] = $e;
+                    }
+                }
+                $testEmails = array_values(array_unique($emails));
+            }
+
+            $testWhatsappNumbers = [];
+            if (!$productionMode) {
+                $testWhatsappNumbers = $this->parseWhatsappNumbers($tenant?->test_notification_whatsapp_numbers);
+            }
+            $testSmsNumbers = [];
+            if (!$productionMode) {
+                $testSmsNumbers = $this->parseSmsNumbers($tenant?->test_notification_sms_numbers);
+            }
+
+            $mode = $this->resolveNotificationMode();
+            $warnings = [];
+            $mailerName = (string) config('mail.default', 'log');
+            $smtpConfigured = $mailerName === 'smtp'
+                && trim((string) config('mail.mailers.smtp.host', '')) !== ''
+                && trim((string) config('mail.mailers.smtp.username', '')) !== '';
+            if ($productionMode && !$smtpConfigured) {
+                $warnings[] = 'Configuración recomendada: usar SMTP autenticado (MAIL_MAILER=smtp + credenciales) para mejorar entrega y evitar rate limit.';
+                Log::warning('Activation email notifications are not using authenticated SMTP', [
+                    'tenant_id' => $tenantId,
+                    'activation_id' => $activationId,
+                    'mailer' => $mailerName,
+                    'smtp_host' => (string) config('mail.mailers.smtp.host', ''),
+                    'smtp_username_set' => trim((string) config('mail.mailers.smtp.username', '')) !== '',
+                ]);
+            }
+            $fastMailModeEnv = filter_var((string) env('MAIL_FAST_MODE', 'false'), FILTER_VALIDATE_BOOLEAN);
+            $fastMailMode = $fastMailModeEnv || !$productionMode;
+            $emailsPerMinute = $fastMailMode
+                ? max(1, (int) env('MAIL_FAST_NOTIFICATIONS_PER_MINUTE', 1000))
+                : max(1, (int) env('MAIL_NOTIFICATIONS_PER_MINUTE', 12));
+            $mailThrottleKey = 'mail_notify_rate:' . $tenantId . ':' . $mailerName;
+            $debugEvents = [];
+            $appendDebugEvent = static function (array $event) use (&$debugEvents): void {
+                if (count($debugEvents) >= 300) {
+                    return;
+                }
+                $debugEvents[] = $event;
+            };
+            $appendDebugEvent([
+                'stage' => 'notification_start',
+                'ts' => $this->tenantNowDateTime($tenantId),
                 'tenant_id' => $tenantId,
                 'activation_id' => $activationId,
-                'mailer' => $mailerName,
-                'smtp_host' => (string) config('mail.mailers.smtp.host', ''),
-                'smtp_username_set' => trim((string) config('mail.mailers.smtp.username', '')) !== '',
-            ]);
-        }
-        $fastMailModeEnv = filter_var((string) env('MAIL_FAST_MODE', 'false'), FILTER_VALIDATE_BOOLEAN);
-        $fastMailMode = $fastMailModeEnv || ! $productionMode;
-        $emailsPerMinute = $fastMailMode
-            ? max(1, (int) env('MAIL_FAST_NOTIFICATIONS_PER_MINUTE', 1000))
-            : max(1, (int) env('MAIL_NOTIFICATIONS_PER_MINUTE', 12));
-        $mailThrottleKey = 'mail_notify_rate:'.$tenantId.':'.$mailerName;
-        $debugEvents = [];
-        $appendDebugEvent = static function (array $event) use (&$debugEvents): void {
-            if (count($debugEvents) >= 300) {
-                return;
-            }
-            $debugEvents[] = $event;
-        };
-        $appendDebugEvent([
-            'stage' => 'notification_start',
-            'ts' => $this->tenantNowDateTime($tenantId),
-            'tenant_id' => $tenantId,
-            'activation_id' => $activationId,
-            'production_mode' => $productionMode,
-            'mailer' => $mailerName,
-            'smtp_configured' => $smtpConfigured,
-            'email_notifications_enabled' => $emailNotificationsEnabled,
-            'mode' => $mode,
-            'fast_mail_mode' => $fastMailMode,
-            'emails_per_minute' => $emailsPerMinute,
-            'target_filter_count' => count($targetEmails),
-            'resolved_people_count' => count($people),
-        ]);
-        $throttleBeforeSend = static function () use ($mailThrottleKey, $emailsPerMinute): array {
-            $safeCounter = 0;
-            $waitedSeconds = 0;
-            try {
-                while (RateLimiter::tooManyAttempts($mailThrottleKey, $emailsPerMinute) && $safeCounter < 20) {
-                    $waitSeconds = max(1, RateLimiter::availableIn($mailThrottleKey));
-                    usleep($waitSeconds * 1000 * 1000);
-                    $waitedSeconds += $waitSeconds;
-                    $safeCounter++;
-                }
-                RateLimiter::hit($mailThrottleKey, 60);
-            } catch (\Throwable $rateLimiterError) {
-                return [
-                    'waited_seconds' => $waitedSeconds,
-                    'wait_cycles' => $safeCounter,
-                    'key' => $mailThrottleKey,
-                    'error' => trim((string) $rateLimiterError->getMessage()),
-                ];
-            }
-
-            return [
-                'waited_seconds' => $waitedSeconds,
-                'wait_cycles' => $safeCounter,
-                'key' => $mailThrottleKey,
-                'error' => '',
-            ];
-        };
-        $ts = now()->format('Ymd_His');
-        $sent = 0;
-        $filesWritten = 0;
-        $whatsappSent = 0;
-        $whatsappFilesWritten = 0;
-        $smsSent = 0;
-        $smsFilesWritten = 0;
-        $sentRecipients = [];
-        $failedRecipients = [];
-        if (empty($people)) {
-            $warnings[] = 'No se resolvieron destinatarios para esta activación.';
-            $appendDebugEvent([
-                'stage' => 'no_recipients_resolved',
-                'ts' => $this->tenantNowDateTime($tenantId),
-                'target_filter_count' => count($targetEmails),
-                'production_mode' => $productionMode,
-            ]);
-        }
-        if ($mode !== 'file' && ! $emailNotificationsEnabled) {
-            $warnings[] = 'Envío de correos desactivado en configuración del tenant.';
-            $appendDebugEvent([
-                'stage' => 'email_notifications_disabled',
-                'ts' => $this->tenantNowDateTime($tenantId),
-                'tenant_id' => $tenantId,
-                'activation_id' => $activationId,
-            ]);
-        }
-        if ($mode !== 'file' && ! $whatsappNotificationsEnabled) {
-            $warnings[] = 'Envío de WhatsApp desactivado en configuración del tenant.';
-        }
-        if ($mode !== 'file' && ! ((bool) ($channels['sms_enabled'] ?? false))) {
-            $warnings[] = 'Envío de SMS desactivado en configuración del tenant.';
-        }
-
-        if ($mode === 'file') {
-            $dir = 'notifications_outbox/'.$tenantId.'/'.$activationId;
-            if (! Storage::disk('local')->exists($dir)) {
-                Storage::disk('local')->makeDirectory($dir);
-            }
-        }
-
-        $index = [
-            'activation_id' => $activationId,
-            'tenant_id' => $tenantId,
-            'mode' => $mode,
-            'generated_at' => $this->tenantNowDateTime($tenantId),
-            'recipients' => [],
-        ];
-
-        $isSimulacro = false;
-        if (Schema::hasTable('activacion_del_plan_trs') && Schema::hasTable('tipo_emergencia_cat')) {
-            $activation = DB::table('activacion_del_plan_trs')
-                ->where('ac_de_pl-tenant_id', $tenantId)
-                ->where('ac_de_pl-id', $activationId)
-                ->first();
-            $tiEmId = trim((string) ($activation?->{'ac_de_pl-ti_em_id-fk'} ?? ''));
-            if ($tiEmId !== '') {
-                $tiEm = DB::table('tipo_emergencia_cat')
-                    ->when(
-                        Schema::hasColumn('tipo_emergencia_cat', 'ti_em-tenant_id'),
-                        static fn ($q) => $q->where('ti_em-tenant_id', $tenantId),
-                    )
-                    ->where('ti_em-id', $tiEmId)
-                    ->first();
-                $tiEmCod = strtoupper(trim((string) ($tiEm?->{'ti_em-cod'} ?? '')));
-                $tiEmNombre = strtoupper(trim((string) ($tiEm?->{'ti_em-nombre'} ?? '')));
-                $isSimulacro = str_contains($tiEmCod, 'SIM') || str_contains($tiEmNombre, 'SIMULACRO');
-            }
-        }
-
-        $riesgoLabel = '';
-        $nivelLabel = '';
-        $activationMessageReal = '';
-        $activationMessageSimul = '';
-        if (Schema::hasTable('activacion_del_plan_trs')) {
-            $activation = DB::table('activacion_del_plan_trs')
-                ->where('ac_de_pl-tenant_id', $tenantId)
-                ->where('ac_de_pl-id', $activationId)
-                ->first();
-            $activationMessageReal = trim((string) ($activation?->{'ac_de_pl-mensaje_inic'} ?? ''));
-            $activationMessageSimul = trim((string) ($activation?->{'ac_de_pl-mensaje_simul'} ?? ''));
-            $riesgoId = trim((string) ($activation?->{'ac_de_pl-rie_id-fk'} ?? ''));
-            $nivelId = trim((string) ($activation?->{'ac_de_pl-ni_al_id-fk-inicial'} ?? ''));
-            if ($riesgoId !== '' && Schema::hasTable('riesgo_cat')) {
-                $riesgo = DB::table('riesgo_cat')
-                    ->when(
-                        Schema::hasColumn('riesgo_cat', 'rie-tenant_id'),
-                        static fn ($q) => $q->where(function ($qq) use ($tenantId) {
-                            $qq->whereNull('rie-tenant_id')->orWhere('rie-tenant_id', $tenantId);
-                        }),
-                    )
-                    ->where('rie-id', $riesgoId)
-                    ->first();
-                $riesgoLabel = trim((string) ($riesgo?->{'rie-nombre'} ?? '')) ?: $riesgoId;
-            }
-            if ($nivelId !== '' && Schema::hasTable('nivel_alerta_cat')) {
-                $nivel = DB::table('nivel_alerta_cat')
-                    ->when(
-                        Schema::hasColumn('nivel_alerta_cat', 'ni_al-tenant_id'),
-                        static fn ($q) => $q->where(function ($qq) use ($tenantId) {
-                            $qq->whereNull('ni_al-tenant_id')->orWhere('ni_al-tenant_id', $tenantId);
-                        }),
-                    )
-                    ->where('ni_al-id', $nivelId)
-                    ->first();
-                $nivelLabel = trim((string) ($nivel?->{'ni_al-nombre'} ?? '')) ?: $nivelId;
-            }
-        }
-        $planName = implode(' · ', array_filter([$riesgoLabel, $nivelLabel], static fn ($v) => trim((string) $v) !== '')) ?: $activationId;
-        $normalizeMessage = static function ($value): string {
-            if (is_string($value)) {
-                $decoded = json_decode($value, true);
-                if (json_last_error() === JSON_ERROR_NONE && is_array($decoded)) {
-                    $value = $decoded;
-                }
-            }
-            if (is_array($value)) {
-                $parts = [];
-                foreach ($value as $v) {
-                    if (is_string($v) && trim($v) !== '') {
-                        $parts[] = trim($v);
-                    }
-                }
-                return trim(implode("\n", $parts));
-            }
-            return trim((string) ($value ?? ''));
-        };
-        $notificationMessage = $normalizeMessage(
-            $isSimulacro ? ($tenant?->notifications_message_simulacrum ?? '') : ($tenant?->notifications_message_real ?? ''),
-        );
-        if ($notificationMessage === '' || preg_match('/^\d+$/', $notificationMessage) === 1) {
-            $phase2Message = $isSimulacro ? '' : $normalizeMessage($tenant?->notifications_message_phase2 ?? '');
-            if ($phase2Message !== '') {
-                $notificationMessage = $phase2Message;
-            } else {
-                $fallbackMessage = $isSimulacro ? $activationMessageSimul : $activationMessageReal;
-                if ($fallbackMessage !== '') {
-                    $notificationMessage = $fallbackMessage;
-                }
-            }
-        }
-        if ($notificationMessage !== '') {
-            $tmp = $notificationMessage;
-            if (str_contains($tmp, 'XXXX')) {
-                $tmp = preg_replace('/XXXX/', $nivelLabel !== '' ? $nivelLabel : 'NIVEL', $tmp, 1) ?? $tmp;
-                $tmp = preg_replace('/XXXX/', $riesgoLabel !== '' ? $riesgoLabel : 'RIESGO', $tmp, 1) ?? $tmp;
-            }
-            $notificationMessage = $tmp;
-        }
-        $emailSubject = $subjectPrefix.$planName;
-        $emailBody = ($notificationMessage !== '' ? $notificationMessage : '')."\n";
-        $includeCredentials = (bool) ($tenant?->notifications_include_credentials ?? false);
-        $escapeHtml = static fn ($value) => htmlspecialchars((string) $value, ENT_QUOTES, 'UTF-8');
-        $buildActionsByTipo = static function (array $acciones): array {
-            $accionesByTipo = [
-                'TITULAR' => [],
-                'SUPLENTE' => [],
-            ];
-            foreach ($acciones as $a) {
-                $tag = strtoupper((string) ($a['tipo_asignacion'] ?? 'SUPLENTE')) === 'TITULAR' ? 'TITULAR' : 'SUPLENTE';
-                $estado = trim((string) ($a['estado'] ?? '')) ?: 'PENDIENTE';
-                $key = trim((string) ($a['accion_operativa_id'] ?? '')) ?: trim((string) ($a['accion_detalle_id'] ?? '')) ?: trim((string) ($a['accion'] ?? ''));
-                $label = trim((string) ($a['accion_operativa_descrip'] ?? '')) ?: trim((string) ($a['accion_operativa_cod'] ?? '')) ?: trim((string) ($a['accion'] ?? ''));
-                if (! array_key_exists($key, $accionesByTipo[$tag])) {
-                    $accionesByTipo[$tag][$key] = [
-                        'accion_operativa_id' => trim((string) ($a['accion_operativa_id'] ?? '')) ?: null,
-                        'accion_operativa_cod' => trim((string) ($a['accion_operativa_cod'] ?? '')) ?: null,
-                        'accion_operativa_descrip' => trim((string) ($a['accion_operativa_descrip'] ?? '')) ?: null,
-                        'accion' => $label,
-                        'items' => [],
-                    ];
-                }
-                $accionesByTipo[$tag][$key]['items'][] = [
-                    'ejecucion_id' => (string) ($a['ejecucion_id'] ?? ''),
-                    'accion_detalle_id' => (string) ($a['accion_detalle_id'] ?? ''),
-                    'estado' => $estado,
-                ];
-            }
-
-            return $accionesByTipo;
-        };
-        $maxEmailAttempts = $fastMailMode ? 1 : 4;
-        $emailDelayMs = $fastMailMode ? 0 : 250;
-        $batchSize = $fastMailMode ? 999999 : 3;
-        $batchDelayMs = $fastMailMode ? 0 : 1500;
-        $rateLimitBaseDelayMs = $fastMailMode ? 0 : 1200;
-        $transientRetryDelayMs = $fastMailMode ? 0 : max(1000, (int) env('MAIL_TRANSIENT_RETRY_DELAY_MS', 15000));
-        $rateLimitRetryDelayMs = $fastMailMode ? 0 : max(1000, (int) env('MAIL_RATELIMIT_RETRY_DELAY_MS', 65000));
-        $cooldownAfterTransientFailureMs = $fastMailMode ? 0 : max(0, (int) env('MAIL_COOLDOWN_AFTER_TRANSIENT_FAILURE_MS', 45000));
-        $isTransientSmtpError = static function (string $error): bool {
-            $msg = strtolower(trim($error));
-            if ($msg === '') {
-                return false;
-            }
-
-            return str_contains($msg, '451')
-                || str_contains($msg, '421')
-                || str_contains($msg, '4.7.1')
-                || str_contains($msg, '4.4.2')
-                || str_contains($msg, 'ratelimit')
-                || str_contains($msg, 'rate limit')
-                || str_contains($msg, 'timeout')
-                || str_contains($msg, 'timed out')
-                || str_contains($msg, 'temporarily')
-                || str_contains($msg, 'try again later')
-                || str_contains($msg, 'too many');
-        };
-        $isRateLimitSmtpError = static function (string $error): bool {
-            $msg = strtolower(trim($error));
-            if ($msg === '') {
-                return false;
-            }
-
-            return str_contains($msg, '451')
-                || str_contains($msg, '4.7.1')
-                || str_contains($msg, 'ratelimit')
-                || str_contains($msg, 'rate limit');
-        };
-        $sendEmailWithRetry = static function (callable $sender) use ($isTransientSmtpError, $isRateLimitSmtpError, $maxEmailAttempts, $rateLimitBaseDelayMs, $transientRetryDelayMs, $rateLimitRetryDelayMs): array {
-            $attempt = 0;
-            $lastError = '';
-            $transientError = false;
-            $waitedMs = 0;
-            while ($attempt < $maxEmailAttempts) {
-                $attempt++;
-                try {
-                    $sender();
-
-                    return ['sent' => true, 'error' => '', 'attempts' => $attempt, 'transient_error' => false, 'waited_ms' => $waitedMs];
-                } catch (\Throwable $mailErrorEx) {
-                    $lastError = trim((string) $mailErrorEx->getMessage());
-                    $isTransient = $isTransientSmtpError($lastError);
-                    $transientError = $transientError || $isTransient;
-                    if (! $isTransient || $attempt >= $maxEmailAttempts) {
-                        break;
-                    }
-                    $delayMs = $isRateLimitSmtpError($lastError)
-                        ? $rateLimitRetryDelayMs
-                        : max($transientRetryDelayMs, $rateLimitBaseDelayMs * (2 ** ($attempt - 1)));
-                    usleep($delayMs * 1000);
-                    $waitedMs += $delayMs;
-                }
-            }
-
-            return ['sent' => false, 'error' => $lastError, 'attempts' => $attempt, 'transient_error' => $transientError, 'waited_ms' => $waitedMs];
-        };
-        $mailAttemptCounter = 0;
-
-        if ($productionMode) {
-            foreach ($people as $p) {
-                $rawTo = trim((string) ($p['email'] ?? ''));
-                $to = filter_var($rawTo, FILTER_VALIDATE_EMAIL) ? strtolower($rawTo) : '';
-                $subject = $emailSubject;
-                $accionesByTipo = $buildActionsByTipo(is_array($p['acciones'] ?? null) ? $p['acciones'] : []);
-                $hasTitular = ! empty($accionesByTipo['TITULAR'] ?? []);
-                $hasSuplente = ! empty($accionesByTipo['SUPLENTE'] ?? []);
-                $rolesLabel = $hasTitular && $hasSuplente
-                    ? 'TITULAR / SUPLENTE'
-                    : ($hasTitular ? 'TITULAR' : ($hasSuplente ? 'SUPLENTE' : '—'));
-                $emailSent = false;
-                $emailError = '';
-
-                $body = $emailBody;
-                if ($includeCredentials) {
-                    $credentialsLines = $this->buildCredentialsLines($tenant, $to !== '' ? $to : null);
-                    if (! empty($credentialsLines)) {
-                        $body = rtrim($body)."\n\n".implode("\n", $credentialsLines)."\n";
-                    }
-                }
-                $bodyHtml = '<div style="font-family: Arial, sans-serif; font-size: 14px; color: #111; line-height: 1.6;">'
-                    .'<div style="font-size: 16px; font-weight: 700; margin-bottom: 12px;">'.$escapeHtml($subject).'</div>'
-                    .($notificationMessage !== ''
-                        ? '<div style="margin-bottom: 12px;">'.$this->renderNotificationHtml($notificationMessage).'</div>'
-                        : '')
-                    .'<div style="margin: 12px 0; padding: 10px 12px; background: #f6f6f6; border: 1px solid #e5e5e5; border-radius: 8px;">'
-                    .'<div><strong>Plan:</strong> '.$escapeHtml($planName).'</div>'
-                    .'<div><strong>Activación:</strong> '.$escapeHtml($activationId).'</div>'
-                    .'<div><strong>Rol:</strong> '.$escapeHtml($rolesLabel).'</div>'
-                    .'</div>'
-                    .'<div style="font-size: 12px; color: #666;">'.$escapeHtml($modoLabel).'</div>'
-                    .'</div>';
-                if ($includeCredentials) {
-                    $credentialsLines = $this->buildCredentialsLines($tenant, $to !== '' ? $to : null);
-                    if (! empty($credentialsLines)) {
-                        $bodyHtml .= '<div style="margin-top: 12px; padding: 10px 12px; border: 1px solid #e5e5e5; border-radius: 8px; background: #fafafa;">'
-                            .'<div style="font-weight: 600; margin-bottom: 6px;">Credenciales de acceso</div>'
-                            .$this->renderNotificationHtml(implode("\n", $credentialsLines))
-                            .'</div>';
-                    }
-                }
-
-                if ($mode === 'file') {
-                    $safeTarget = $to !== '' ? $to : (string) ($p['per_id'] ?? 'persona');
-                    $safe = preg_replace('/[^A-Za-z0-9._-]+/', '_', $safeTarget) ?: 'persona';
-                    $path = 'notifications_outbox/'.$tenantId.'/'.$activationId.'/'.$ts.'-'.$safe.'.txt';
-                    Storage::disk('local')->put($path, $body);
-                    $htmlPath = 'notifications_outbox/'.$tenantId.'/'.$activationId.'/'.$ts.'-'.$safe.'.html';
-                    Storage::disk('local')->put($htmlPath, $bodyHtml);
-                    $jsonPath = 'notifications_outbox/'.$tenantId.'/'.$activationId.'/'.$ts.'-'.$safe.'.json';
-                    Storage::disk('local')->put($jsonPath, json_encode([
-                        'activation_id' => $activationId,
-                        'tenant_id' => $tenantId,
-                        'mode' => $mode,
-                        'generated_at' => $this->tenantNowDateTime($tenantId),
-                        'subject' => $subject,
-                        'persona' => [
-                            'per_id' => (string) ($p['per_id'] ?? ''),
-                            'nombre' => (string) ($p['nombre'] ?? ''),
-                            'email' => $to !== '' ? $to : null,
-                        ],
-                        'acciones_por_tipo' => [
-                            'TITULAR' => array_values($accionesByTipo['TITULAR'] ?? []),
-                            'SUPLENTE' => array_values($accionesByTipo['SUPLENTE'] ?? []),
-                        ],
-                    ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
-                    $filesWritten++;
-                } else {
-                    if ($to !== '') {
-                        if (! $emailNotificationsEnabled) {
-                            $appendDebugEvent([
-                                'stage' => 'skip_person_email_disabled',
-                                'ts' => $this->tenantNowDateTime($tenantId),
-                                'per_id' => (string) ($p['per_id'] ?? ''),
-                                'email' => $to,
-                            ]);
-                        } else {
-                        $throttleInfo = $throttleBeforeSend();
-                        $throttleError = trim((string) ($throttleInfo['error'] ?? ''));
-                        if ($throttleError !== '') {
-                            $warnings[] = 'Rate limiter no disponible, se continúa sin control de tasa: '.$throttleError;
-                        }
-                        $mailResult = $sendEmailWithRetry(static function () use ($bodyHtml, $to, $subject): void {
-                            Mail::html($bodyHtml, static function ($m) use ($to, $subject) {
-                                $m->to($to)->subject($subject);
-                            });
-                        });
-                        if (($mailResult['sent'] ?? false) === true) {
-                            $sent++;
-                            $emailSent = true;
-                            $sentRecipients[] = $to;
-                        } else {
-                            $emailSent = false;
-                            $emailError = trim((string) ($mailResult['error'] ?? ''));
-                            $attempts = (int) ($mailResult['attempts'] ?? 1);
-                            $retryWaitedMs = (int) ($mailResult['waited_ms'] ?? 0);
-                            if (($mailResult['transient_error'] ?? false) === true) {
-                                $warnings[] = 'Se agotaron reintentos por error SMTP transitorio para '.$to.' (intentos: '.$attempts.', espera acumulada: '.round($retryWaitedMs / 1000, 1).'s).';
-                            }
-                        }
-                        $appendDebugEvent([
-                            'stage' => 'send_person_email',
-                            'ts' => $this->tenantNowDateTime($tenantId),
-                            'per_id' => (string) ($p['per_id'] ?? ''),
-                            'email' => $to,
-                            'sent' => $emailSent,
-                            'attempts' => (int) ($mailResult['attempts'] ?? 0),
-                            'transient_error' => (bool) ($mailResult['transient_error'] ?? false),
-                            'retry_waited_ms' => (int) ($mailResult['waited_ms'] ?? 0),
-                            'error' => $emailError,
-                            'throttle_waited_seconds' => (int) ($throttleInfo['waited_seconds'] ?? 0),
-                            'throttle_wait_cycles' => (int) ($throttleInfo['wait_cycles'] ?? 0),
-                        ]);
-                        if (($mailResult['sent'] ?? false) !== true && ($mailResult['transient_error'] ?? false) === true && $cooldownAfterTransientFailureMs > 0) {
-                            usleep($cooldownAfterTransientFailureMs * 1000);
-                        }
-                        }
-                    } else {
-                        $emailError = 'email destinatario no válido o ausente';
-                        $appendDebugEvent([
-                            'stage' => 'skip_person_email_invalid',
-                            'ts' => $this->tenantNowDateTime($tenantId),
-                            'per_id' => (string) ($p['per_id'] ?? ''),
-                            'email' => $rawTo !== '' ? strtolower($rawTo) : null,
-                            'reason' => $emailError,
-                        ]);
-                    }
-                    $mailAttemptCounter++;
-                    if ($mailAttemptCounter % $batchSize === 0) {
-                        usleep($batchDelayMs * 1000);
-                    } else {
-                        usleep($emailDelayMs * 1000);
-                    }
-                }
-                if ($mode !== 'file' && $emailNotificationsEnabled && ! $emailSent) {
-                    $failedRecipients[] = [
-                        'per_id' => (string) ($p['per_id'] ?? ''),
-                        'email' => $to !== '' ? $to : null,
-                        'reason' => $emailError !== '' ? $emailError : 'email no enviado',
-                    ];
-                }
-
-                if (Schema::hasTable('notificacion_envio_trs')) {
-                    $insert = [
-                        'no_en-id' => 'NOEN-'.Str::uuid()->toString(),
-                        'no_en-tenant_id' => $tenantId,
-                        'no_en-ac_de_pl_id-fk' => $activationId,
-                        'no_en-per_id-fk' => $p['per_id'],
-                        'no_en-gr_op_id-fk' => null,
-                        'no_en-rol_id-fk' => null,
-                        'no_en-ca_co_id-fk' => null,
-                        'no_en-mensaje' => $notificationMessage !== '' ? $notificationMessage : $subject,
-                        'no_en-ts' => $this->tenantNowDateTime($tenantId),
-                        'no_en-estado' => $mode === 'file' ? 'SIMULADO' : ($emailSent ? 'ENVIADO' : 'SIMULADO'),
-                        'no_en-num_de_intento' => '0',
-                    ];
-                    if ($mode !== 'file' && ! $emailSent) {
-                        $extra = $emailError !== ''
-                            ? '[email no enviado: '.$emailError.']'
-                            : (! $emailNotificationsEnabled ? '[envío de correos desactivado en tenant]' : '[email destinatario no válido o ausente]');
-                        $insert['no_en-mensaje'] = trim(($insert['no_en-mensaje'] ?? '').' '.$extra);
-                    }
-                    if (Schema::hasColumn('notificacion_envio_trs', 'no_en-modo')) {
-                        $insert['no_en-modo'] = $modoLabel;
-                    }
-                    try {
-                        DB::table('notificacion_envio_trs')->insert($insert);
-                    } catch (\Throwable $logError) {
-                        $warnings[] = 'No se pudo registrar notificación email para persona '.$p['per_id'].': '.$logError->getMessage();
-                    }
-                }
-
-                $index['recipients'][] = [
-                    'per_id' => (string) ($p['per_id'] ?? ''),
-                    'nombre' => (string) ($p['nombre'] ?? ''),
-                    'email' => $to !== '' ? $to : null,
-                ];
-            }
-        } elseif (! empty($testEmails)) {
-            $subject = $emailSubject;
-            foreach ($testEmails as $testEmail) {
-                $body = $emailBody;
-                if ($includeCredentials) {
-                    $credentialsLines = $this->buildCredentialsLines($tenant, $testEmail);
-                    if (! empty($credentialsLines)) {
-                        $body = rtrim($body)."\n\n".implode("\n", $credentialsLines)."\n";
-                    }
-                }
-                $bodyHtml = '<div style="font-family: Arial, sans-serif; font-size: 14px; color: #111; line-height: 1.6;">'
-                    .'<div style="font-size: 16px; font-weight: 700; margin-bottom: 12px;">'.$escapeHtml($subject).'</div>'
-                    .($notificationMessage !== ''
-                        ? '<div style="margin-bottom: 12px;">'.$this->renderNotificationHtml($notificationMessage).'</div>'
-                        : '')
-                    .'<div style="margin: 12px 0; padding: 10px 12px; background: #f6f6f6; border: 1px solid #e5e5e5; border-radius: 8px;">'
-                    .'<div><strong>Plan:</strong> '.$escapeHtml($planName).'</div>'
-                    .'<div><strong>Activación:</strong> '.$escapeHtml($activationId).'</div>'
-                    .'</div>'
-                    .'<div style="font-size: 12px; color: #666;">'.$escapeHtml($modoLabel).'</div>'
-                    .'</div>';
-                if ($includeCredentials) {
-                    $credentialsLines = $this->buildCredentialsLines($tenant, $testEmail);
-                    if (! empty($credentialsLines)) {
-                        $bodyHtml .= '<div style="margin-top: 12px; padding: 10px 12px; border: 1px solid #e5e5e5; border-radius: 8px; background: #fafafa;">'
-                            .'<div style="font-weight: 600; margin-bottom: 6px;">Credenciales de acceso</div>'
-                            .$this->renderNotificationHtml(implode("\n", $credentialsLines))
-                            .'</div>';
-                    }
-                }
-
-                if ($mode === 'file') {
-                    $safe = preg_replace('/[^A-Za-z0-9._-]+/', '_', $testEmail) ?: 'test';
-                    $path = 'notifications_outbox/'.$tenantId.'/'.$activationId.'/'.$ts.'-'.$safe.'.txt';
-                    Storage::disk('local')->put($path, $body);
-                    $htmlPath = 'notifications_outbox/'.$tenantId.'/'.$activationId.'/'.$ts.'-'.$safe.'.html';
-                    Storage::disk('local')->put($htmlPath, $bodyHtml);
-                    $jsonPath = 'notifications_outbox/'.$tenantId.'/'.$activationId.'/'.$ts.'-'.$safe.'.json';
-                    Storage::disk('local')->put($jsonPath, json_encode([
-                        'activation_id' => $activationId,
-                        'tenant_id' => $tenantId,
-                        'mode' => $mode,
-                        'generated_at' => $this->tenantNowDateTime($tenantId),
-                        'subject' => $subject,
-                        'destino_prueba' => $testEmail,
-                        'personas' => array_map(static fn ($p) => [
-                            'per_id' => (string) ($p['per_id'] ?? ''),
-                            'nombre' => (string) ($p['nombre'] ?? ''),
-                            'email' => (string) ($p['email'] ?? ''),
-                        ], $people),
-                    ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
-                    $filesWritten++;
-                } else {
-                    if (! $emailNotificationsEnabled) {
-                        $appendDebugEvent([
-                            'stage' => 'skip_test_email_disabled',
-                            'ts' => $this->tenantNowDateTime($tenantId),
-                            'email' => $testEmail,
-                        ]);
-                    } else {
-                    $throttleInfo = $throttleBeforeSend();
-                    $throttleError = trim((string) ($throttleInfo['error'] ?? ''));
-                    if ($throttleError !== '') {
-                        $warnings[] = 'Rate limiter no disponible, se continúa sin control de tasa: '.$throttleError;
-                    }
-                    $mailResult = $sendEmailWithRetry(static function () use ($bodyHtml, $testEmail, $subject): void {
-                        Mail::html($bodyHtml, static function ($m) use ($testEmail, $subject) {
-                            $m->to($testEmail)->subject($subject);
-                        });
-                    });
-                    if (($mailResult['sent'] ?? false) === true) {
-                        $sent++;
-                        $sentRecipients[] = $testEmail;
-                    } else {
-                        $error = trim((string) ($mailResult['error'] ?? ''));
-                        $attempts = (int) ($mailResult['attempts'] ?? 1);
-                        $retryWaitedMs = (int) ($mailResult['waited_ms'] ?? 0);
-                        $warnings[] = 'No se pudo enviar email de prueba a '.$testEmail.': '.$error;
-                        if (($mailResult['transient_error'] ?? false) === true) {
-                            $warnings[] = 'Se agotaron reintentos por error SMTP transitorio para email de prueba '.$testEmail.' (intentos: '.$attempts.', espera acumulada: '.round($retryWaitedMs / 1000, 1).'s).';
-                        }
-                        $failedRecipients[] = [
-                            'per_id' => null,
-                            'email' => $testEmail,
-                            'reason' => $error !== '' ? $error : 'email de prueba no enviado',
-                        ];
-                    }
-                    $appendDebugEvent([
-                        'stage' => 'send_test_email',
-                        'ts' => $this->tenantNowDateTime($tenantId),
-                        'email' => $testEmail,
-                        'sent' => (bool) ($mailResult['sent'] ?? false),
-                        'attempts' => (int) ($mailResult['attempts'] ?? 0),
-                        'transient_error' => (bool) ($mailResult['transient_error'] ?? false),
-                        'retry_waited_ms' => (int) ($mailResult['waited_ms'] ?? 0),
-                        'error' => trim((string) ($mailResult['error'] ?? '')),
-                        'throttle_waited_seconds' => (int) ($throttleInfo['waited_seconds'] ?? 0),
-                        'throttle_wait_cycles' => (int) ($throttleInfo['wait_cycles'] ?? 0),
-                    ]);
-                    if (($mailResult['sent'] ?? false) !== true && ($mailResult['transient_error'] ?? false) === true && $cooldownAfterTransientFailureMs > 0) {
-                        usleep($cooldownAfterTransientFailureMs * 1000);
-                    }
-                    $mailAttemptCounter++;
-                    if ($mailAttemptCounter % $batchSize === 0) {
-                        usleep($batchDelayMs * 1000);
-                    } else {
-                        usleep($emailDelayMs * 1000);
-                    }
-                    }
-                }
-
-                if (Schema::hasTable('notificacion_envio_trs')) {
-                    $insert = [
-                        'no_en-id' => 'NOEN-'.Str::uuid()->toString(),
-                        'no_en-tenant_id' => $tenantId,
-                        'no_en-ac_de_pl_id-fk' => $activationId,
-                        'no_en-per_id-fk' => null,
-                        'no_en-gr_op_id-fk' => null,
-                        'no_en-rol_id-fk' => null,
-                        'no_en-ca_co_id-fk' => null,
-                        'no_en-mensaje' => $notificationMessage !== '' ? $notificationMessage : $subject.' -> '.$testEmail,
-                        'no_en-ts' => $this->tenantNowDateTime($tenantId),
-                        'no_en-estado' => $mode === 'file' ? 'SIMULADO' : 'ENVIADO',
-                        'no_en-num_de_intento' => '0',
-                    ];
-                    if (Schema::hasColumn('notificacion_envio_trs', 'no_en-modo')) {
-                        $insert['no_en-modo'] = $modoLabel;
-                    }
-                    try {
-                        DB::table('notificacion_envio_trs')->insert($insert);
-                    } catch (\Throwable $logError) {
-                        $warnings[] = 'No se pudo registrar notificación email de prueba a '.$testEmail.': '.$logError->getMessage();
-                    }
-                }
-
-                $index['recipients'][] = [
-                    'per_id' => null,
-                    'nombre' => null,
-                    'email' => $testEmail,
-                ];
-            }
-        }
-
-        $whatsappTargets = [];
-        if ($productionMode) {
-            foreach ($people as $p) {
-                $phone = $this->normalizeWhatsappNumber((string) ($p['tel_mov'] ?? ''));
-                if ($phone === '') {
-                    continue;
-                }
-                $whatsappTargets[$phone] = [
-                    'per_id' => (string) ($p['per_id'] ?? ''),
-                    'nombre' => (string) ($p['nombre'] ?? ''),
-                    'email' => strtolower(trim((string) ($p['email'] ?? ''))),
-                    'phone' => $phone,
-                ];
-            }
-        } else {
-            foreach ($testWhatsappNumbers as $phone) {
-                $normalized = $this->normalizeWhatsappNumber((string) $phone);
-                if ($normalized === '') {
-                    continue;
-                }
-                $whatsappTargets[$normalized] = [
-                    'per_id' => null,
-                    'nombre' => 'TEST',
-                    'phone' => $normalized,
-                ];
-            }
-        }
-        $whatsappMessage = trim($emailBody);
-        if ($whatsappMessage !== '' && ! empty($whatsappTargets)) {
-            foreach ($whatsappTargets as $target) {
-                $phone = (string) ($target['phone'] ?? '');
-                if ($phone === '') {
-                    continue;
-                }
-                $messageForTarget = $whatsappMessage;
-                if ($includeCredentials) {
-                    $credentialsLines = $this->buildCredentialsLines($tenant, (string) ($target['email'] ?? ''));
-                    if (! empty($credentialsLines)) {
-                        $messageForTarget = trim($messageForTarget."\n\n".implode("\n", $credentialsLines));
-                    }
-                }
-                if ($mode === 'file') {
-                    $safe = preg_replace('/[^A-Za-z0-9._-]+/', '_', $phone) ?: 'whatsapp';
-                    $path = 'notifications_outbox/'.$tenantId.'/'.$activationId.'/'.$ts.'-whatsapp-'.$safe.'.txt';
-                    Storage::disk('local')->put($path, $messageForTarget."\n");
-                    $whatsappFilesWritten++;
-                    continue;
-                }
-                if (! $whatsappNotificationsEnabled) {
-                    continue;
-                }
-                $wa = $this->sendWhatsappText($tenantId, $phone, $messageForTarget, [
-                    'activation_id' => $activationId,
-                    'per_id' => $target['per_id'] ?? null,
-                    'nombre' => $target['nombre'] ?? null,
-                    'type' => 'activation',
-                ]);
-                if (($wa['sent'] ?? false) === true) {
-                    $whatsappSent++;
-                } else {
-                    $failedRecipients[] = [
-                        'per_id' => (string) ($target['per_id'] ?? ''),
-                        'email' => null,
-                        'phone' => $phone,
-                        'reason' => trim((string) ($wa['error'] ?? 'WhatsApp no enviado')),
-                    ];
-                }
-            }
-        }
-        $smsTargets = [];
-        if ($productionMode) {
-            foreach ($people as $p) {
-                $phone = $this->normalizeWhatsappNumber((string) ($p['tel_mov'] ?? ''));
-                if ($phone === '') {
-                    continue;
-                }
-                $smsTargets[$phone] = [
-                    'per_id' => (string) ($p['per_id'] ?? ''),
-                    'nombre' => (string) ($p['nombre'] ?? ''),
-                    'email' => strtolower(trim((string) ($p['email'] ?? ''))),
-                    'phone' => $phone,
-                ];
-            }
-        } else {
-            foreach ($testSmsNumbers as $phone) {
-                $normalized = $this->normalizeWhatsappNumber((string) $phone);
-                if ($normalized === '') {
-                    continue;
-                }
-                $smsTargets[$normalized] = [
-                    'per_id' => null,
-                    'nombre' => 'TEST',
-                    'phone' => $normalized,
-                ];
-            }
-        }
-        $smsMessage = trim($emailBody);
-        if ($smsMessage !== '' && ! empty($smsTargets)) {
-            foreach ($smsTargets as $target) {
-                $phone = (string) ($target['phone'] ?? '');
-                if ($phone === '') {
-                    continue;
-                }
-                $messageForTarget = $smsMessage;
-                if ($includeCredentials) {
-                    $credentialsLines = $this->buildCredentialsLines($tenant, (string) ($target['email'] ?? ''));
-                    if (! empty($credentialsLines)) {
-                        $messageForTarget = trim($messageForTarget."\n\n".implode("\n", $credentialsLines));
-                    }
-                }
-                if ($mode === 'file') {
-                    $safe = preg_replace('/[^A-Za-z0-9._-]+/', '_', $phone) ?: 'sms';
-                    $path = 'notifications_outbox/'.$tenantId.'/'.$activationId.'/'.$ts.'-sms-'.$safe.'.txt';
-                    Storage::disk('local')->put($path, $messageForTarget."\n");
-                    $smsFilesWritten++;
-                    continue;
-                }
-                if (! ((bool) ($channels['sms_enabled'] ?? false))) {
-                    continue;
-                }
-                $sms = $this->sendSmsText($tenantId, $phone, $messageForTarget, [
-                    'activation_id' => $activationId,
-                    'per_id' => $target['per_id'] ?? null,
-                    'nombre' => $target['nombre'] ?? null,
-                    'type' => 'activation',
-                ]);
-                if (($sms['sent'] ?? false) === true) {
-                    $smsSent++;
-                } else {
-                    $failedRecipients[] = [
-                        'per_id' => (string) ($target['per_id'] ?? ''),
-                        'email' => null,
-                        'phone' => $phone,
-                        'reason' => trim((string) ($sms['error'] ?? 'SMS no enviado')),
-                    ];
-                }
-            }
-        }
-
-        if ($mode === 'file') {
-            $indexPath = 'notifications_outbox/'.$tenantId.'/'.$activationId.'/'.$ts.'-index.json';
-            Storage::disk('local')->put($indexPath, json_encode($index, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
-            $filesWritten++;
-        }
-
-        return response()->json([
-            'message' => 'OK',
-            'mode' => $mode,
-            'sent' => $sent,
-            'files_written' => $filesWritten,
-            'recipients' => count($people),
-            'recipient_emails' => array_values(array_unique(array_values(array_filter(array_map(
-                static fn ($r) => strtolower(trim((string) ($r['email'] ?? ''))),
-                is_array($index['recipients'] ?? null) ? $index['recipients'] : [],
-            ), static fn ($email) => $email !== '')))),
-            'sent_recipient_emails' => array_values(array_unique(array_values(array_filter(array_map(
-                static fn ($e) => strtolower(trim((string) $e)),
-                $sentRecipients,
-            ), static fn ($email) => $email !== '')))),
-            'failed_recipients' => $failedRecipients,
-            'whatsapp_sent' => $whatsappSent,
-            'whatsapp_files_written' => $whatsappFilesWritten,
-            'whatsapp_recipients' => count($whatsappTargets),
-            'sms_sent' => $smsSent,
-            'sms_files_written' => $smsFilesWritten,
-            'sms_recipients' => count($smsTargets),
-            'email_subject' => $emailSubject,
-            'email_body' => $emailBody,
-            'warnings' => $warnings,
-            'debug' => [
                 'production_mode' => $productionMode,
                 'mailer' => $mailerName,
                 'smtp_configured' => $smtpConfigured,
                 'email_notifications_enabled' => $emailNotificationsEnabled,
-                'whatsapp_notifications_enabled' => $whatsappNotificationsEnabled,
-                'sms_notifications_enabled' => (bool) ($channels['sms_enabled'] ?? false),
-                'notifications_channel' => (string) ($channels['channel'] ?? 'email'),
+                'mode' => $mode,
                 'fast_mail_mode' => $fastMailMode,
                 'emails_per_minute' => $emailsPerMinute,
-                'transient_retry_delay_ms' => $transientRetryDelayMs,
-                'ratelimit_retry_delay_ms' => $rateLimitRetryDelayMs,
-                'cooldown_after_transient_failure_ms' => $cooldownAfterTransientFailureMs,
                 'target_filter_count' => count($targetEmails),
                 'resolved_people_count' => count($people),
-                'mail_attempt_counter' => $mailAttemptCounter,
-                'events' => $debugEvents,
-            ],
-        ]);
+            ]);
+            $throttleBeforeSend = static function () use ($mailThrottleKey, $emailsPerMinute): array {
+                $safeCounter = 0;
+                $waitedSeconds = 0;
+                try {
+                    while (RateLimiter::tooManyAttempts($mailThrottleKey, $emailsPerMinute) && $safeCounter < 20) {
+                        $waitSeconds = max(1, RateLimiter::availableIn($mailThrottleKey));
+                        usleep($waitSeconds * 1000 * 1000);
+                        $waitedSeconds += $waitSeconds;
+                        $safeCounter++;
+                    }
+                    RateLimiter::hit($mailThrottleKey, 60);
+                } catch (\Throwable $rateLimiterError) {
+                    return [
+                        'waited_seconds' => $waitedSeconds,
+                        'wait_cycles' => $safeCounter,
+                        'key' => $mailThrottleKey,
+                        'error' => trim((string) $rateLimiterError->getMessage()),
+                    ];
+                }
+
+                return [
+                    'waited_seconds' => $waitedSeconds,
+                    'wait_cycles' => $safeCounter,
+                    'key' => $mailThrottleKey,
+                    'error' => '',
+                ];
+            };
+            $ts = now()->format('Ymd_His');
+            $sent = 0;
+            $filesWritten = 0;
+            $whatsappSent = 0;
+            $whatsappFilesWritten = 0;
+            $smsSent = 0;
+            $smsFilesWritten = 0;
+            $sentRecipients = [];
+            $failedRecipients = [];
+            if (empty($people)) {
+                $warnings[] = 'No se resolvieron destinatarios para esta activación.';
+                $appendDebugEvent([
+                    'stage' => 'no_recipients_resolved',
+                    'ts' => $this->tenantNowDateTime($tenantId),
+                    'target_filter_count' => count($targetEmails),
+                    'production_mode' => $productionMode,
+                ]);
+            }
+            if ($mode !== 'file' && !$emailNotificationsEnabled) {
+                $warnings[] = 'Envío de correos desactivado en configuración del tenant.';
+                $appendDebugEvent([
+                    'stage' => 'email_notifications_disabled',
+                    'ts' => $this->tenantNowDateTime($tenantId),
+                    'tenant_id' => $tenantId,
+                    'activation_id' => $activationId,
+                ]);
+            }
+            if ($mode !== 'file' && !$whatsappNotificationsEnabled) {
+                $warnings[] = 'Envío de WhatsApp desactivado en configuración del tenant.';
+            }
+            if ($mode !== 'file' && !((bool) ($channels['sms_enabled'] ?? false))) {
+                $warnings[] = 'Envío de SMS desactivado en configuración del tenant.';
+            }
+
+            if ($mode === 'file') {
+                $dir = 'notifications_outbox/' . $tenantId . '/' . $activationId;
+                if (!Storage::disk('local')->exists($dir)) {
+                    Storage::disk('local')->makeDirectory($dir);
+                }
+            }
+
+            $index = [
+                'activation_id' => $activationId,
+                'tenant_id' => $tenantId,
+                'mode' => $mode,
+                'generated_at' => $this->tenantNowDateTime($tenantId),
+                'recipients' => [],
+            ];
+
+            $isSimulacro = false;
+            if (Schema::hasTable('activacion_del_plan_trs') && Schema::hasTable('tipo_emergencia_cat')) {
+                $activation = DB::table('activacion_del_plan_trs')
+                    ->where('ac_de_pl-tenant_id', $tenantId)
+                    ->where('ac_de_pl-id', $activationId)
+                    ->first();
+                $tiEmId = trim((string) ($activation?->{'ac_de_pl-ti_em_id-fk'} ?? ''));
+                if ($tiEmId !== '') {
+                    $tiEm = DB::table('tipo_emergencia_cat')
+                        ->when(
+                            Schema::hasColumn('tipo_emergencia_cat', 'ti_em-tenant_id'),
+                            static fn($q) => $q->where('ti_em-tenant_id', $tenantId),
+                        )
+                        ->where('ti_em-id', $tiEmId)
+                        ->first();
+                    $tiEmCod = strtoupper(trim((string) ($tiEm?->{'ti_em-cod'} ?? '')));
+                    $tiEmNombre = strtoupper(trim((string) ($tiEm?->{'ti_em-nombre'} ?? '')));
+                    $isSimulacro = str_contains($tiEmCod, 'SIM') || str_contains($tiEmNombre, 'SIMULACRO');
+                }
+            }
+
+            $riesgoLabel = '';
+            $nivelLabel = '';
+            $activationMessageReal = '';
+            $activationMessageSimul = '';
+            if (Schema::hasTable('activacion_del_plan_trs')) {
+                $activation = DB::table('activacion_del_plan_trs')
+                    ->where('ac_de_pl-tenant_id', $tenantId)
+                    ->where('ac_de_pl-id', $activationId)
+                    ->first();
+                $activationMessageReal = trim((string) ($activation?->{'ac_de_pl-mensaje_inic'} ?? ''));
+                $activationMessageSimul = trim((string) ($activation?->{'ac_de_pl-mensaje_simul'} ?? ''));
+                $riesgoId = trim((string) ($activation?->{'ac_de_pl-rie_id-fk'} ?? ''));
+                $nivelId = trim((string) ($activation?->{'ac_de_pl-ni_al_id-fk-inicial'} ?? ''));
+                if ($riesgoId !== '' && Schema::hasTable('riesgo_cat')) {
+                    $riesgo = DB::table('riesgo_cat')
+                        ->when(
+                            Schema::hasColumn('riesgo_cat', 'rie-tenant_id'),
+                            static fn($q) => $q->where(function ($qq) use ($tenantId) {
+                                $qq->whereNull('rie-tenant_id')->orWhere('rie-tenant_id', $tenantId);
+                            }),
+                        )
+                        ->where('rie-id', $riesgoId)
+                        ->first();
+                    $riesgoLabel = trim((string) ($riesgo?->{'rie-nombre'} ?? '')) ?: $riesgoId;
+                }
+                if ($nivelId !== '' && Schema::hasTable('nivel_alerta_cat')) {
+                    $nivel = DB::table('nivel_alerta_cat')
+                        ->when(
+                            Schema::hasColumn('nivel_alerta_cat', 'ni_al-tenant_id'),
+                            static fn($q) => $q->where(function ($qq) use ($tenantId) {
+                                $qq->whereNull('ni_al-tenant_id')->orWhere('ni_al-tenant_id', $tenantId);
+                            }),
+                        )
+                        ->where('ni_al-id', $nivelId)
+                        ->first();
+                    $nivelLabel = trim((string) ($nivel?->{'ni_al-nombre'} ?? '')) ?: $nivelId;
+                }
+            }
+            $planName = implode(' · ', array_filter([$riesgoLabel, $nivelLabel], static fn($v) => trim((string) $v) !== '')) ?: $activationId;
+            $normalizeMessage = static function ($value): string {
+                if (is_string($value)) {
+                    $decoded = json_decode($value, true);
+                    if (json_last_error() === JSON_ERROR_NONE && is_array($decoded)) {
+                        $value = $decoded;
+                    }
+                }
+                if (is_array($value)) {
+                    $parts = [];
+                    foreach ($value as $v) {
+                        if (is_string($v) && trim($v) !== '') {
+                            $parts[] = trim($v);
+                        }
+                    }
+                    return trim(implode("\n", $parts));
+                }
+                return trim((string) ($value ?? ''));
+            };
+            $notificationMessage = $normalizeMessage(
+                $isSimulacro ? ($tenant?->notifications_message_simulacrum ?? '') : ($tenant?->notifications_message_real ?? ''),
+            );
+            if ($notificationMessage === '' || preg_match('/^\d+$/', $notificationMessage) === 1) {
+                $phase2Message = $isSimulacro ? '' : $normalizeMessage($tenant?->notifications_message_phase2 ?? '');
+                if ($phase2Message !== '') {
+                    $notificationMessage = $phase2Message;
+                } else {
+                    $fallbackMessage = $isSimulacro ? $activationMessageSimul : $activationMessageReal;
+                    if ($fallbackMessage !== '') {
+                        $notificationMessage = $fallbackMessage;
+                    }
+                }
+            }
+            if ($notificationMessage !== '') {
+                $tmp = $notificationMessage;
+                if (str_contains($tmp, 'XXXX')) {
+                    $tmp = preg_replace('/XXXX/', $nivelLabel !== '' ? $nivelLabel : 'NIVEL', $tmp, 1) ?? $tmp;
+                    $tmp = preg_replace('/XXXX/', $riesgoLabel !== '' ? $riesgoLabel : 'RIESGO', $tmp, 1) ?? $tmp;
+                }
+                $notificationMessage = $tmp;
+            }
+            $emailSubject = $subjectPrefix . $planName;
+            $emailBody = ($notificationMessage !== '' ? $notificationMessage : '') . "\n";
+            $escapeHtml = static fn($value) => htmlspecialchars((string) $value, ENT_QUOTES, 'UTF-8');
+            $buildActionsByTipo = static function (array $acciones): array {
+                $accionesByTipo = [
+                    'TITULAR' => [],
+                    'SUPLENTE' => [],
+                ];
+                foreach ($acciones as $a) {
+                    $tag = strtoupper((string) ($a['tipo_asignacion'] ?? 'SUPLENTE')) === 'TITULAR' ? 'TITULAR' : 'SUPLENTE';
+                    $estado = trim((string) ($a['estado'] ?? '')) ?: 'PENDIENTE';
+                    $key = trim((string) ($a['accion_operativa_id'] ?? '')) ?: trim((string) ($a['accion_detalle_id'] ?? '')) ?: trim((string) ($a['accion'] ?? ''));
+                    $label = trim((string) ($a['accion_operativa_descrip'] ?? '')) ?: trim((string) ($a['accion_operativa_cod'] ?? '')) ?: trim((string) ($a['accion'] ?? ''));
+                    if (!array_key_exists($key, $accionesByTipo[$tag])) {
+                        $accionesByTipo[$tag][$key] = [
+                            'accion_operativa_id' => trim((string) ($a['accion_operativa_id'] ?? '')) ?: null,
+                            'accion_operativa_cod' => trim((string) ($a['accion_operativa_cod'] ?? '')) ?: null,
+                            'accion_operativa_descrip' => trim((string) ($a['accion_operativa_descrip'] ?? '')) ?: null,
+                            'accion' => $label,
+                            'items' => [],
+                        ];
+                    }
+                    $accionesByTipo[$tag][$key]['items'][] = [
+                        'ejecucion_id' => (string) ($a['ejecucion_id'] ?? ''),
+                        'accion_detalle_id' => (string) ($a['accion_detalle_id'] ?? ''),
+                        'estado' => $estado,
+                    ];
+                }
+
+                return $accionesByTipo;
+            };
+            $maxEmailAttempts = $fastMailMode ? 1 : 4;
+            $emailDelayMs = $fastMailMode ? 0 : 250;
+            $batchSize = $fastMailMode ? 999999 : 3;
+            $batchDelayMs = $fastMailMode ? 0 : 1500;
+            $rateLimitBaseDelayMs = $fastMailMode ? 0 : 1200;
+            $transientRetryDelayMs = $fastMailMode ? 0 : max(1000, (int) env('MAIL_TRANSIENT_RETRY_DELAY_MS', 15000));
+            $rateLimitRetryDelayMs = $fastMailMode ? 0 : max(1000, (int) env('MAIL_RATELIMIT_RETRY_DELAY_MS', 65000));
+            $cooldownAfterTransientFailureMs = $fastMailMode ? 0 : max(0, (int) env('MAIL_COOLDOWN_AFTER_TRANSIENT_FAILURE_MS', 45000));
+            $isTransientSmtpError = static function (string $error): bool {
+                $msg = strtolower(trim($error));
+                if ($msg === '') {
+                    return false;
+                }
+
+                return str_contains($msg, '451')
+                    || str_contains($msg, '421')
+                    || str_contains($msg, '4.7.1')
+                    || str_contains($msg, '4.4.2')
+                    || str_contains($msg, 'ratelimit')
+                    || str_contains($msg, 'rate limit')
+                    || str_contains($msg, 'timeout')
+                    || str_contains($msg, 'timed out')
+                    || str_contains($msg, 'temporarily')
+                    || str_contains($msg, 'try again later')
+                    || str_contains($msg, 'too many');
+            };
+            $isRateLimitSmtpError = static function (string $error): bool {
+                $msg = strtolower(trim($error));
+                if ($msg === '') {
+                    return false;
+                }
+
+                return str_contains($msg, '451')
+                    || str_contains($msg, '4.7.1')
+                    || str_contains($msg, 'ratelimit')
+                    || str_contains($msg, 'rate limit');
+            };
+            $sendEmailWithRetry = static function (callable $sender) use ($isTransientSmtpError, $isRateLimitSmtpError, $maxEmailAttempts, $rateLimitBaseDelayMs, $transientRetryDelayMs, $rateLimitRetryDelayMs): array {
+                $attempt = 0;
+                $lastError = '';
+                $transientError = false;
+                $waitedMs = 0;
+                while ($attempt < $maxEmailAttempts) {
+                    $attempt++;
+                    try {
+                        $sender();
+
+                        return ['sent' => true, 'error' => '', 'attempts' => $attempt, 'transient_error' => false, 'waited_ms' => $waitedMs];
+                    } catch (\Throwable $mailErrorEx) {
+                        $lastError = trim((string) $mailErrorEx->getMessage());
+                        $isTransient = $isTransientSmtpError($lastError);
+                        $transientError = $transientError || $isTransient;
+                        if (!$isTransient || $attempt >= $maxEmailAttempts) {
+                            break;
+                        }
+                        $delayMs = $isRateLimitSmtpError($lastError)
+                            ? $rateLimitRetryDelayMs
+                            : max($transientRetryDelayMs, $rateLimitBaseDelayMs * (2 ** ($attempt - 1)));
+                        usleep($delayMs * 1000);
+                        $waitedMs += $delayMs;
+                    }
+                }
+
+                return ['sent' => false, 'error' => $lastError, 'attempts' => $attempt, 'transient_error' => $transientError, 'waited_ms' => $waitedMs];
+            };
+            $mailAttemptCounter = 0;
+
+            if ($productionMode) {
+                foreach ($people as $p) {
+                    $rawTo = trim((string) ($p['email'] ?? ''));
+                    $to = filter_var($rawTo, FILTER_VALIDATE_EMAIL) ? strtolower($rawTo) : '';
+                    $subject = $emailSubject;
+                    $accionesByTipo = $buildActionsByTipo(is_array($p['acciones'] ?? null) ? $p['acciones'] : []);
+                    $hasTitular = !empty($accionesByTipo['TITULAR'] ?? []);
+                    $hasSuplente = !empty($accionesByTipo['SUPLENTE'] ?? []);
+                    $rolesLabel = $hasTitular && $hasSuplente
+                        ? 'TITULAR / SUPLENTE'
+                        : ($hasTitular ? 'TITULAR' : ($hasSuplente ? 'SUPLENTE' : '—'));
+                    $emailSent = false;
+                    $emailError = '';
+
+                    $body = $emailBody;
+                    $bodyHtml = '<div style="font-family: Arial, sans-serif; font-size: 14px; color: #111; line-height: 1.6;">'
+                        . '<div style="font-size: 16px; font-weight: 700; margin-bottom: 12px;">' . $escapeHtml($subject) . '</div>'
+                        . ($notificationMessage !== ''
+                            ? '<div style="margin-bottom: 12px;">' . $this->renderNotificationHtml($notificationMessage) . '</div>'
+                            : '')
+                        . '<div style="margin: 12px 0; padding: 10px 12px; background: #f6f6f6; border: 1px solid #e5e5e5; border-radius: 8px;">'
+                        . '<div><strong>Plan:</strong> ' . $escapeHtml($planName) . '</div>'
+                        . '<div><strong>Activación:</strong> ' . $escapeHtml($activationId) . '</div>'
+                        . '<div><strong>Rol:</strong> ' . $escapeHtml($rolesLabel) . '</div>'
+                        . '</div>'
+                        . '<div style="font-size: 12px; color: #666;">' . $escapeHtml($modoLabel) . '</div>'
+                        . '</div>';
+
+                    if ($mode === 'file') {
+                        $safeTarget = $to !== '' ? $to : (string) ($p['per_id'] ?? 'persona');
+                        $safe = preg_replace('/[^A-Za-z0-9._-]+/', '_', $safeTarget) ?: 'persona';
+                        $path = 'notifications_outbox/' . $tenantId . '/' . $activationId . '/' . $ts . '-' . $safe . '.txt';
+                        Storage::disk('local')->put($path, $body);
+                        $htmlPath = 'notifications_outbox/' . $tenantId . '/' . $activationId . '/' . $ts . '-' . $safe . '.html';
+                        Storage::disk('local')->put($htmlPath, $bodyHtml);
+                        $jsonPath = 'notifications_outbox/' . $tenantId . '/' . $activationId . '/' . $ts . '-' . $safe . '.json';
+                        Storage::disk('local')->put($jsonPath, json_encode([
+                            'activation_id' => $activationId,
+                            'tenant_id' => $tenantId,
+                            'mode' => $mode,
+                            'generated_at' => $this->tenantNowDateTime($tenantId),
+                            'subject' => $subject,
+                            'persona' => [
+                                'per_id' => (string) ($p['per_id'] ?? ''),
+                                'nombre' => (string) ($p['nombre'] ?? ''),
+                                'email' => $to !== '' ? $to : null,
+                            ],
+                            'acciones_por_tipo' => [
+                                'TITULAR' => array_values($accionesByTipo['TITULAR'] ?? []),
+                                'SUPLENTE' => array_values($accionesByTipo['SUPLENTE'] ?? []),
+                            ],
+                        ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+                        $filesWritten++;
+                    } else {
+                        if ($to !== '') {
+                            if (!$emailNotificationsEnabled) {
+                                $appendDebugEvent([
+                                    'stage' => 'skip_person_email_disabled',
+                                    'ts' => $this->tenantNowDateTime($tenantId),
+                                    'per_id' => (string) ($p['per_id'] ?? ''),
+                                    'email' => $to,
+                                ]);
+                            } else {
+                                $throttleInfo = $throttleBeforeSend();
+                                $throttleError = trim((string) ($throttleInfo['error'] ?? ''));
+                                if ($throttleError !== '') {
+                                    $warnings[] = 'Rate limiter no disponible, se continúa sin control de tasa: ' . $throttleError;
+                                }
+                                $mailResult = $sendEmailWithRetry(static function () use ($bodyHtml, $to, $subject): void {
+                                    Mail::html($bodyHtml, static function ($m) use ($to, $subject) {
+                                        $m->to($to)->subject($subject);
+                                    });
+                                });
+                                if (($mailResult['sent'] ?? false) === true) {
+                                    $sent++;
+                                    $emailSent = true;
+                                    $sentRecipients[] = $to;
+                                } else {
+                                    $emailSent = false;
+                                    $emailError = trim((string) ($mailResult['error'] ?? ''));
+                                    $attempts = (int) ($mailResult['attempts'] ?? 1);
+                                    $retryWaitedMs = (int) ($mailResult['waited_ms'] ?? 0);
+                                    if (($mailResult['transient_error'] ?? false) === true) {
+                                        $warnings[] = 'Se agotaron reintentos por error SMTP transitorio para ' . $to . ' (intentos: ' . $attempts . ', espera acumulada: ' . round($retryWaitedMs / 1000, 1) . 's).';
+                                    }
+                                }
+                                $appendDebugEvent([
+                                    'stage' => 'send_person_email',
+                                    'ts' => $this->tenantNowDateTime($tenantId),
+                                    'per_id' => (string) ($p['per_id'] ?? ''),
+                                    'email' => $to,
+                                    'sent' => $emailSent,
+                                    'attempts' => (int) ($mailResult['attempts'] ?? 0),
+                                    'transient_error' => (bool) ($mailResult['transient_error'] ?? false),
+                                    'retry_waited_ms' => (int) ($mailResult['waited_ms'] ?? 0),
+                                    'error' => $emailError,
+                                    'throttle_waited_seconds' => (int) ($throttleInfo['waited_seconds'] ?? 0),
+                                    'throttle_wait_cycles' => (int) ($throttleInfo['wait_cycles'] ?? 0),
+                                ]);
+                                if (($mailResult['sent'] ?? false) !== true && ($mailResult['transient_error'] ?? false) === true && $cooldownAfterTransientFailureMs > 0) {
+                                    usleep($cooldownAfterTransientFailureMs * 1000);
+                                }
+                            }
+                        } else {
+                            $emailError = 'email destinatario no válido o ausente';
+                            $appendDebugEvent([
+                                'stage' => 'skip_person_email_invalid',
+                                'ts' => $this->tenantNowDateTime($tenantId),
+                                'per_id' => (string) ($p['per_id'] ?? ''),
+                                'email' => $rawTo !== '' ? strtolower($rawTo) : null,
+                                'reason' => $emailError,
+                            ]);
+                        }
+                        $mailAttemptCounter++;
+                        if ($mailAttemptCounter % $batchSize === 0) {
+                            usleep($batchDelayMs * 1000);
+                        } else {
+                            usleep($emailDelayMs * 1000);
+                        }
+                    }
+                    if ($mode !== 'file' && $emailNotificationsEnabled && !$emailSent) {
+                        $failedRecipients[] = [
+                            'per_id' => (string) ($p['per_id'] ?? ''),
+                            'email' => $to !== '' ? $to : null,
+                            'reason' => $emailError !== '' ? $emailError : 'email no enviado',
+                        ];
+                    }
+
+                    if (Schema::hasTable('notificacion_envio_trs')) {
+                        $insert = [
+                            'no_en-id' => 'NOEN-' . Str::uuid()->toString(),
+                            'no_en-tenant_id' => $tenantId,
+                            'no_en-ac_de_pl_id-fk' => $activationId,
+                            'no_en-per_id-fk' => $p['per_id'],
+                            'no_en-gr_op_id-fk' => null,
+                            'no_en-rol_id-fk' => null,
+                            'no_en-ca_co_id-fk' => null,
+                            'no_en-mensaje' => $notificationMessage !== '' ? $notificationMessage : $subject,
+                            'no_en-ts' => $this->tenantNowDateTime($tenantId),
+                            'no_en-estado' => $mode === 'file' ? 'SIMULADO' : ($emailSent ? 'ENVIADO' : 'SIMULADO'),
+                            'no_en-num_de_intento' => '0',
+                        ];
+                        if ($mode !== 'file' && !$emailSent) {
+                            $extra = $emailError !== ''
+                                ? '[email no enviado: ' . $emailError . ']'
+                                : (!$emailNotificationsEnabled ? '[envío de correos desactivado en tenant]' : '[email destinatario no válido o ausente]');
+                            $insert['no_en-mensaje'] = trim(($insert['no_en-mensaje'] ?? '') . ' ' . $extra);
+                        }
+                        if (Schema::hasColumn('notificacion_envio_trs', 'no_en-modo')) {
+                            $insert['no_en-modo'] = $modoLabel;
+                        }
+                        try {
+                            DB::table('notificacion_envio_trs')->insert($insert);
+                        } catch (\Throwable $logError) {
+                            $warnings[] = 'No se pudo registrar notificación email para persona ' . $p['per_id'] . ': ' . $logError->getMessage();
+                        }
+                    }
+
+                    $index['recipients'][] = [
+                        'per_id' => (string) ($p['per_id'] ?? ''),
+                        'nombre' => (string) ($p['nombre'] ?? ''),
+                        'email' => $to !== '' ? $to : null,
+                    ];
+                }
+            } elseif (!empty($testEmails)) {
+                $subject = $emailSubject;
+                foreach ($testEmails as $testEmail) {
+                    $body = $emailBody;
+                    $bodyHtml = '<div style="font-family: Arial, sans-serif; font-size: 14px; color: #111; line-height: 1.6;">'
+                        . '<div style="font-size: 16px; font-weight: 700; margin-bottom: 12px;">' . $escapeHtml($subject) . '</div>'
+                        . ($notificationMessage !== ''
+                            ? '<div style="margin-bottom: 12px;">' . $this->renderNotificationHtml($notificationMessage) . '</div>'
+                            : '')
+                        . '<div style="margin: 12px 0; padding: 10px 12px; background: #f6f6f6; border: 1px solid #e5e5e5; border-radius: 8px;">'
+                        . '<div><strong>Plan:</strong> ' . $escapeHtml($planName) . '</div>'
+                        . '<div><strong>Activación:</strong> ' . $escapeHtml($activationId) . '</div>'
+                        . '</div>'
+                        . '<div style="font-size: 12px; color: #666;">' . $escapeHtml($modoLabel) . '</div>'
+                        . '</div>';
+
+                    if ($mode === 'file') {
+                        $safe = preg_replace('/[^A-Za-z0-9._-]+/', '_', $testEmail) ?: 'test';
+                        $path = 'notifications_outbox/' . $tenantId . '/' . $activationId . '/' . $ts . '-' . $safe . '.txt';
+                        Storage::disk('local')->put($path, $body);
+                        $htmlPath = 'notifications_outbox/' . $tenantId . '/' . $activationId . '/' . $ts . '-' . $safe . '.html';
+                        Storage::disk('local')->put($htmlPath, $bodyHtml);
+                        $jsonPath = 'notifications_outbox/' . $tenantId . '/' . $activationId . '/' . $ts . '-' . $safe . '.json';
+                        Storage::disk('local')->put($jsonPath, json_encode([
+                            'activation_id' => $activationId,
+                            'tenant_id' => $tenantId,
+                            'mode' => $mode,
+                            'generated_at' => $this->tenantNowDateTime($tenantId),
+                            'subject' => $subject,
+                            'destino_prueba' => $testEmail,
+                            'personas' => array_map(static fn($p) => [
+                                'per_id' => (string) ($p['per_id'] ?? ''),
+                                'nombre' => (string) ($p['nombre'] ?? ''),
+                                'email' => (string) ($p['email'] ?? ''),
+                            ], $people),
+                        ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+                        $filesWritten++;
+                    } else {
+                        if (!$emailNotificationsEnabled) {
+                            $appendDebugEvent([
+                                'stage' => 'skip_test_email_disabled',
+                                'ts' => $this->tenantNowDateTime($tenantId),
+                                'email' => $testEmail,
+                            ]);
+                        } else {
+                            $throttleInfo = $throttleBeforeSend();
+                            $throttleError = trim((string) ($throttleInfo['error'] ?? ''));
+                            if ($throttleError !== '') {
+                                $warnings[] = 'Rate limiter no disponible, se continúa sin control de tasa: ' . $throttleError;
+                            }
+                            $mailResult = $sendEmailWithRetry(static function () use ($bodyHtml, $testEmail, $subject): void {
+                                Mail::html($bodyHtml, static function ($m) use ($testEmail, $subject) {
+                                    $m->to($testEmail)->subject($subject);
+                                });
+                            });
+                            if (($mailResult['sent'] ?? false) === true) {
+                                $sent++;
+                                $sentRecipients[] = $testEmail;
+                            } else {
+                                $error = trim((string) ($mailResult['error'] ?? ''));
+                                $attempts = (int) ($mailResult['attempts'] ?? 1);
+                                $retryWaitedMs = (int) ($mailResult['waited_ms'] ?? 0);
+                                $warnings[] = 'No se pudo enviar email de prueba a ' . $testEmail . ': ' . $error;
+                                if (($mailResult['transient_error'] ?? false) === true) {
+                                    $warnings[] = 'Se agotaron reintentos por error SMTP transitorio para email de prueba ' . $testEmail . ' (intentos: ' . $attempts . ', espera acumulada: ' . round($retryWaitedMs / 1000, 1) . 's).';
+                                }
+                                $failedRecipients[] = [
+                                    'per_id' => null,
+                                    'email' => $testEmail,
+                                    'reason' => $error !== '' ? $error : 'email de prueba no enviado',
+                                ];
+                            }
+                            $appendDebugEvent([
+                                'stage' => 'send_test_email',
+                                'ts' => $this->tenantNowDateTime($tenantId),
+                                'email' => $testEmail,
+                                'sent' => (bool) ($mailResult['sent'] ?? false),
+                                'attempts' => (int) ($mailResult['attempts'] ?? 0),
+                                'transient_error' => (bool) ($mailResult['transient_error'] ?? false),
+                                'retry_waited_ms' => (int) ($mailResult['waited_ms'] ?? 0),
+                                'error' => trim((string) ($mailResult['error'] ?? '')),
+                                'throttle_waited_seconds' => (int) ($throttleInfo['waited_seconds'] ?? 0),
+                                'throttle_wait_cycles' => (int) ($throttleInfo['wait_cycles'] ?? 0),
+                            ]);
+                            if (($mailResult['sent'] ?? false) !== true && ($mailResult['transient_error'] ?? false) === true && $cooldownAfterTransientFailureMs > 0) {
+                                usleep($cooldownAfterTransientFailureMs * 1000);
+                            }
+                            $mailAttemptCounter++;
+                            if ($mailAttemptCounter % $batchSize === 0) {
+                                usleep($batchDelayMs * 1000);
+                            } else {
+                                usleep($emailDelayMs * 1000);
+                            }
+                        }
+                    }
+
+                    if (Schema::hasTable('notificacion_envio_trs')) {
+                        $insert = [
+                            'no_en-id' => 'NOEN-' . Str::uuid()->toString(),
+                            'no_en-tenant_id' => $tenantId,
+                            'no_en-ac_de_pl_id-fk' => $activationId,
+                            'no_en-per_id-fk' => null,
+                            'no_en-gr_op_id-fk' => null,
+                            'no_en-rol_id-fk' => null,
+                            'no_en-ca_co_id-fk' => null,
+                            'no_en-mensaje' => $notificationMessage !== '' ? $notificationMessage : $subject . ' -> ' . $testEmail,
+                            'no_en-ts' => $this->tenantNowDateTime($tenantId),
+                            'no_en-estado' => $mode === 'file' ? 'SIMULADO' : 'ENVIADO',
+                            'no_en-num_de_intento' => '0',
+                        ];
+                        if (Schema::hasColumn('notificacion_envio_trs', 'no_en-modo')) {
+                            $insert['no_en-modo'] = $modoLabel;
+                        }
+                        try {
+                            DB::table('notificacion_envio_trs')->insert($insert);
+                        } catch (\Throwable $logError) {
+                            $warnings[] = 'No se pudo registrar notificación email de prueba a ' . $testEmail . ': ' . $logError->getMessage();
+                        }
+                    }
+
+                    $index['recipients'][] = [
+                        'per_id' => null,
+                        'nombre' => null,
+                        'email' => $testEmail,
+                    ];
+                }
+            }
+
+            $whatsappTargets = [];
+            if ($productionMode) {
+                foreach ($people as $p) {
+                    $phone = $this->normalizeWhatsappNumber((string) ($p['tel_mov'] ?? ''));
+                    if ($phone === '') {
+                        continue;
+                    }
+                    $whatsappTargets[$phone] = [
+                        'per_id' => (string) ($p['per_id'] ?? ''),
+                        'nombre' => (string) ($p['nombre'] ?? ''),
+                        'phone' => $phone,
+                    ];
+                }
+            } else {
+                foreach ($testWhatsappNumbers as $phone) {
+                    $normalized = $this->normalizeWhatsappNumber((string) $phone);
+                    if ($normalized === '') {
+                        continue;
+                    }
+                    $whatsappTargets[$normalized] = [
+                        'per_id' => null,
+                        'nombre' => 'TEST',
+                        'phone' => $normalized,
+                    ];
+                }
+            }
+            $whatsappMessage = trim($emailBody);
+            if ($whatsappMessage !== '' && !empty($whatsappTargets)) {
+                foreach ($whatsappTargets as $target) {
+                    $phone = (string) ($target['phone'] ?? '');
+                    if ($phone === '') {
+                        continue;
+                    }
+                    if ($mode === 'file') {
+                        $safe = preg_replace('/[^A-Za-z0-9._-]+/', '_', $phone) ?: 'whatsapp';
+                        $path = 'notifications_outbox/' . $tenantId . '/' . $activationId . '/' . $ts . '-whatsapp-' . $safe . '.txt';
+                        Storage::disk('local')->put($path, $whatsappMessage . "\n");
+                        $whatsappFilesWritten++;
+                        continue;
+                    }
+                    if (!$whatsappNotificationsEnabled) {
+                        continue;
+                    }
+                    $wa = $this->sendWhatsappText($tenantId, $phone, $whatsappMessage, [
+                        'activation_id' => $activationId,
+                        'per_id' => $target['per_id'] ?? null,
+                        'nombre' => $target['nombre'] ?? null,
+                        'type' => 'activation',
+                    ]);
+                    if (($wa['sent'] ?? false) === true) {
+                        $whatsappSent++;
+                    } else {
+                        $failedRecipients[] = [
+                            'per_id' => (string) ($target['per_id'] ?? ''),
+                            'email' => null,
+                            'phone' => $phone,
+                            'reason' => trim((string) ($wa['error'] ?? 'WhatsApp no enviado')),
+                        ];
+                    }
+                }
+            }
+            $smsTargets = [];
+            if ($productionMode) {
+                foreach ($people as $p) {
+                    $phone = $this->normalizeWhatsappNumber((string) ($p['tel_mov'] ?? ''));
+                    if ($phone === '') {
+                        continue;
+                    }
+                    $smsTargets[$phone] = [
+                        'per_id' => (string) ($p['per_id'] ?? ''),
+                        'nombre' => (string) ($p['nombre'] ?? ''),
+                        'phone' => $phone,
+                    ];
+                }
+            } else {
+                foreach ($testSmsNumbers as $phone) {
+                    $normalized = $this->normalizeWhatsappNumber((string) $phone);
+                    if ($normalized === '') {
+                        continue;
+                    }
+                    $smsTargets[$normalized] = [
+                        'per_id' => null,
+                        'nombre' => 'TEST',
+                        'phone' => $normalized,
+                    ];
+                }
+            }
+            $smsMessage = trim($emailBody);
+            if ($smsMessage !== '' && !empty($smsTargets)) {
+                foreach ($smsTargets as $target) {
+                    $phone = (string) ($target['phone'] ?? '');
+                    if ($phone === '') {
+                        continue;
+                    }
+                    if ($mode === 'file') {
+                        $safe = preg_replace('/[^A-Za-z0-9._-]+/', '_', $phone) ?: 'sms';
+                        $path = 'notifications_outbox/' . $tenantId . '/' . $activationId . '/' . $ts . '-sms-' . $safe . '.txt';
+                        Storage::disk('local')->put($path, $smsMessage . "\n");
+                        $smsFilesWritten++;
+                        continue;
+                    }
+                    if (!((bool) ($channels['sms_enabled'] ?? false))) {
+                        continue;
+                    }
+                    $sms = $this->sendSmsText($tenantId, $phone, $smsMessage, [
+                        'activation_id' => $activationId,
+                        'per_id' => $target['per_id'] ?? null,
+                        'nombre' => $target['nombre'] ?? null,
+                        'type' => 'activation',
+                    ]);
+                    if (($sms['sent'] ?? false) === true) {
+                        $smsSent++;
+                    } else {
+                        $failedRecipients[] = [
+                            'per_id' => (string) ($target['per_id'] ?? ''),
+                            'email' => null,
+                            'phone' => $phone,
+                            'reason' => trim((string) ($sms['error'] ?? 'SMS no enviado')),
+                        ];
+                    }
+                }
+            }
+
+            if ($mode === 'file') {
+                $indexPath = 'notifications_outbox/' . $tenantId . '/' . $activationId . '/' . $ts . '-index.json';
+                Storage::disk('local')->put($indexPath, json_encode($index, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+                $filesWritten++;
+            }
+
+            return response()->json([
+                'message' => 'OK',
+                'mode' => $mode,
+                'sent' => $sent,
+                'files_written' => $filesWritten,
+                'recipients' => count($people),
+                'recipient_emails' => array_values(array_unique(array_values(array_filter(array_map(
+                    static fn($r) => strtolower(trim((string) ($r['email'] ?? ''))),
+                    is_array($index['recipients'] ?? null) ? $index['recipients'] : [],
+                ), static fn($email) => $email !== '')))),
+                'sent_recipient_emails' => array_values(array_unique(array_values(array_filter(array_map(
+                    static fn($e) => strtolower(trim((string) $e)),
+                    $sentRecipients,
+                ), static fn($email) => $email !== '')))),
+                'failed_recipients' => $failedRecipients,
+                'whatsapp_sent' => $whatsappSent,
+                'whatsapp_files_written' => $whatsappFilesWritten,
+                'whatsapp_recipients' => count($whatsappTargets),
+                'sms_sent' => $smsSent,
+                'sms_files_written' => $smsFilesWritten,
+                'sms_recipients' => count($smsTargets),
+                'email_subject' => $emailSubject,
+                'email_body' => $emailBody,
+                'warnings' => $warnings,
+                'debug' => [
+                    'production_mode' => $productionMode,
+                    'mailer' => $mailerName,
+                    'smtp_configured' => $smtpConfigured,
+                    'email_notifications_enabled' => $emailNotificationsEnabled,
+                    'whatsapp_notifications_enabled' => $whatsappNotificationsEnabled,
+                    'sms_notifications_enabled' => (bool) ($channels['sms_enabled'] ?? false),
+                    'notifications_channel' => (string) ($channels['channel'] ?? 'email'),
+                    'fast_mail_mode' => $fastMailMode,
+                    'emails_per_minute' => $emailsPerMinute,
+                    'transient_retry_delay_ms' => $transientRetryDelayMs,
+                    'ratelimit_retry_delay_ms' => $rateLimitRetryDelayMs,
+                    'cooldown_after_transient_failure_ms' => $cooldownAfterTransientFailureMs,
+                    'target_filter_count' => count($targetEmails),
+                    'resolved_people_count' => count($people),
+                    'mail_attempt_counter' => $mailAttemptCounter,
+                    'events' => $debugEvents,
+                ],
+            ]);
         } catch (\Throwable $e) {
             Log::error('sendNotifications failed', [
                 'tenant_id' => $tenantId,
@@ -1757,7 +1711,7 @@ class ActivationController extends Controller
             $tipo = DB::table('tipo_emergencia_cat')
                 ->when(
                     Schema::hasColumn('tipo_emergencia_cat', 'ti_em-tenant_id'),
-                    static fn ($q) => $q->where('ti_em-tenant_id', $tenantId),
+                    static fn($q) => $q->where('ti_em-tenant_id', $tenantId),
                 )
                 ->where('ti_em-id', $tiEmId)
                 ->first();
@@ -1773,7 +1727,7 @@ class ActivationController extends Controller
             $riesgo = DB::table('riesgo_cat')
                 ->when(
                     Schema::hasColumn('riesgo_cat', 'rie-tenant_id'),
-                    static fn ($q) => $q->where('rie-tenant_id', $tenantId),
+                    static fn($q) => $q->where('rie-tenant_id', $tenantId),
                 )
                 ->where('rie-id', $rieId)
                 ->first();
@@ -1789,7 +1743,7 @@ class ActivationController extends Controller
             $nivel = DB::table('nivel_alerta_cat')
                 ->when(
                     Schema::hasColumn('nivel_alerta_cat', 'ni_al-tenant_id'),
-                    static fn ($q) => $q->where('ni_al-tenant_id', $tenantId),
+                    static fn($q) => $q->where('ni_al-tenant_id', $tenantId),
                 )
                 ->whereRaw("UPPER(COALESCE(`ni_al-nombre`, '')) LIKE '%AVISO%' OR UPPER(COALESCE(`ni_al-cod`, '')) IN ('AVISO','AV')")
                 ->orderByRaw("CASE WHEN UPPER(COALESCE(`ni_al-nombre`, '')) LIKE '%AVISO%' THEN 0 ELSE 1 END")
@@ -1811,17 +1765,17 @@ class ActivationController extends Controller
                     ->join('persona_mst as p', 'p.per-id', '=', 'prg.pe_ro_gr-per_id-fk')
                     ->when(
                         Schema::hasColumn('persona_rol_grupo_cfg', 'pe_ro_gr-tenant_id'),
-                        static fn ($q) => $q->where('prg.pe_ro_gr-tenant_id', $tenantId),
+                        static fn($q) => $q->where('prg.pe_ro_gr-tenant_id', $tenantId),
                     )
                     ->when(
                         Schema::hasColumn('persona_mst', 'per-tenant_id'),
-                        static fn ($q) => $q->where('p.per-tenant_id', $tenantId),
+                        static fn($q) => $q->where('p.per-tenant_id', $tenantId),
                     )
                     ->whereRaw("UPPER(COALESCE(`prg`.`pe_ro_gr-activo`, 'SI')) <> 'NO'")
                     ->whereRaw("UPPER(COALESCE(`prg`.`pe_ro_gr-tipo_asignacion`, '')) IN ('TITULAR','LIDER')")
                     ->when(
                         Schema::hasColumn('persona_rol_grupo_cfg', 'pe_ro_gr-fech_fin'),
-                        static fn ($q) => $q->whereNull('prg.pe_ro_gr-fech_fin'),
+                        static fn($q) => $q->whereNull('prg.pe_ro_gr-fech_fin'),
                     )
                     ->get([
                         'p.per-email as email',
@@ -1850,7 +1804,7 @@ class ActivationController extends Controller
             }
         } else {
             $raw = $tenant?->test_notification_emails;
-            if (! empty($raw)) {
+            if (!empty($raw)) {
                 if (is_string($raw)) {
                     $parts = preg_split('/[;,]+/', $raw) ?: [];
                     foreach ($parts as $p) {
@@ -1876,29 +1830,20 @@ class ActivationController extends Controller
             }
         }
 
-        $subject = $subjectPrefix.'Aviso — '.$tipoLabel;
-        $escapeHtml = static fn ($value) => htmlspecialchars((string) $value, ENT_QUOTES, 'UTF-8');
+        $subject = $subjectPrefix . 'Aviso — ' . $tipoLabel;
+        $escapeHtml = static fn($value) => htmlspecialchars((string) $value, ENT_QUOTES, 'UTF-8');
         $bodyHtml = '<div style="font-family: Arial, sans-serif; font-size: 14px; color: #111; line-height: 1.6;">'
-            .'<div style="font-size: 16px; font-weight: 700; margin-bottom: 12px;">'.$escapeHtml($subject).'</div>'
-            .'<div style="margin-bottom: 12px;">Se informa que se mantiene la situación en <strong>Normalidad</strong>.</div>'
-            .'<div style="margin: 12px 0; padding: 10px 12px; background: #f6f6f6; border: 1px solid #e5e5e5; border-radius: 8px;">'
-            .'<div><strong>Tipo de emergencia:</strong> '.$escapeHtml($tipoLabel).'</div>'
-            .'<div><strong>Riesgo identificado:</strong> '.$escapeHtml($riesgoLabel).'</div>'
-            .'<div><strong>Criterio:</strong> Normalidad</div>'
-            .'<div><strong>Nivel de alerta:</strong> '.$escapeHtml($nivelLabel).'</div>'
-            .'<div><strong>Fecha/hora:</strong> '.$escapeHtml($this->tenantNowDateTime($tenantId)).'</div>'
-            .'</div>'
-            .'<div style="font-size: 12px; color: #666;">'.$escapeHtml($modeLabel).'</div>'
-            .'</div>';
-        if ($includeCredentials) {
-            $credentialsLines = $this->buildCredentialsLines($tenant, null);
-            if (! empty($credentialsLines)) {
-                $bodyHtml .= '<div style="margin-top: 12px; padding: 10px 12px; border: 1px solid #e5e5e5; border-radius: 8px; background: #fafafa;">'
-                    .'<div style="font-weight: 600; margin-bottom: 6px;">Credenciales de acceso</div>'
-                    .$this->renderNotificationHtml(implode("\n", $credentialsLines))
-                    .'</div>';
-            }
-        }
+            . '<div style="font-size: 16px; font-weight: 700; margin-bottom: 12px;">' . $escapeHtml($subject) . '</div>'
+            . '<div style="margin-bottom: 12px;">Se informa que se mantiene la situación en <strong>Normalidad</strong>.</div>'
+            . '<div style="margin: 12px 0; padding: 10px 12px; background: #f6f6f6; border: 1px solid #e5e5e5; border-radius: 8px;">'
+            . '<div><strong>Tipo de emergencia:</strong> ' . $escapeHtml($tipoLabel) . '</div>'
+            . '<div><strong>Riesgo identificado:</strong> ' . $escapeHtml($riesgoLabel) . '</div>'
+            . '<div><strong>Criterio:</strong> Normalidad</div>'
+            . '<div><strong>Nivel de alerta:</strong> ' . $escapeHtml($nivelLabel) . '</div>'
+            . '<div><strong>Fecha/hora:</strong> ' . $escapeHtml($this->tenantNowDateTime($tenantId)) . '</div>'
+            . '</div>'
+            . '<div style="font-size: 12px; color: #666;">' . $escapeHtml($modeLabel) . '</div>'
+            . '</div>';
 
         $mode = $this->resolveNotificationMode();
         $sent = 0;
@@ -1926,12 +1871,12 @@ class ActivationController extends Controller
         foreach ($recipients as $email => $displayName) {
             if ($mode === 'file') {
                 $safe = preg_replace('/[^A-Za-z0-9._-]+/', '_', $email) ?: 'persona';
-                $path = 'notifications_outbox/'.$tenantId.'/normalidad/'.$ts.'-'.$safe.'.html';
+                $path = 'notifications_outbox/' . $tenantId . '/normalidad/' . $ts . '-' . $safe . '.html';
                 Storage::disk('local')->put($path, $bodyHtml);
                 $filesWritten++;
                 continue;
             }
-            if (! $emailNotificationsEnabled) {
+            if (!$emailNotificationsEnabled) {
                 continue;
             }
 
@@ -1944,12 +1889,12 @@ class ActivationController extends Controller
         foreach ($whatsappRecipients as $phone => $displayName) {
             if ($mode === 'file') {
                 $safe = preg_replace('/[^A-Za-z0-9._-]+/', '_', $phone) ?: 'whatsapp';
-                $path = 'notifications_outbox/'.$tenantId.'/normalidad/'.$ts.'-wa-'.$safe.'.txt';
-                Storage::disk('local')->put($path, $whatsappMessage."\n");
+                $path = 'notifications_outbox/' . $tenantId . '/normalidad/' . $ts . '-wa-' . $safe . '.txt';
+                Storage::disk('local')->put($path, $whatsappMessage . "\n");
                 $whatsappFilesWritten++;
                 continue;
             }
-            if (! $whatsappNotificationsEnabled) {
+            if (!$whatsappNotificationsEnabled) {
                 continue;
             }
             $res = $this->sendWhatsappText($tenantId, $phone, $whatsappMessage, ['type' => 'normalidad']);
@@ -1961,12 +1906,12 @@ class ActivationController extends Controller
         foreach ($smsRecipients as $phone => $displayName) {
             if ($mode === 'file') {
                 $safe = preg_replace('/[^A-Za-z0-9._-]+/', '_', $phone) ?: 'sms';
-                $path = 'notifications_outbox/'.$tenantId.'/normalidad/'.$tiEmId.'/'.$rieId.'/'.$ts.'-sms-'.$safe.'.txt';
-                Storage::disk('local')->put($path, $smsMessage."\n");
+                $path = 'notifications_outbox/' . $tenantId . '/normalidad/' . $tiEmId . '/' . $rieId . '/' . $ts . '-sms-' . $safe . '.txt';
+                Storage::disk('local')->put($path, $smsMessage . "\n");
                 $smsFilesWritten++;
                 continue;
             }
-            if (! ((bool) ($channels['sms_enabled'] ?? false))) {
+            if (!((bool) ($channels['sms_enabled'] ?? false))) {
                 continue;
             }
             $res = $this->sendSmsText($tenantId, (string) $phone, $smsMessage, ['type' => 'normalidad']);
@@ -1990,9 +1935,9 @@ class ActivationController extends Controller
             'email_subject' => $subject,
             'email_body' => strip_tags($bodyHtml),
             'warnings' => array_values(array_filter([
-                ! $emailNotificationsEnabled ? 'Envío de correos desactivado en configuración del tenant.' : null,
-                ! $whatsappNotificationsEnabled ? 'Envío de WhatsApp desactivado en configuración del tenant.' : null,
-                ! ((bool) ($channels['sms_enabled'] ?? false)) ? 'Envío de SMS desactivado en configuración del tenant.' : null,
+                !$emailNotificationsEnabled ? 'Envío de correos desactivado en configuración del tenant.' : null,
+                !$whatsappNotificationsEnabled ? 'Envío de WhatsApp desactivado en configuración del tenant.' : null,
+                !((bool) ($channels['sms_enabled'] ?? false)) ? 'Envío de SMS desactivado en configuración del tenant.' : null,
             ])),
         ]);
     }
@@ -2023,12 +1968,12 @@ class ActivationController extends Controller
         $activation = DB::table($activationTable)
             ->when(
                 Schema::hasColumn($activationTable, 'ac_de_pl-tenant_id'),
-                static fn ($q) => $q->where('ac_de_pl-tenant_id', $tenantId),
+                static fn($q) => $q->where('ac_de_pl-tenant_id', $tenantId),
             )
             ->where('ac_de_pl-id', $activationId)
             ->first();
 
-        if (! $activation) {
+        if (!$activation) {
             return response()->json(['message' => 'Activation not found.'], 404);
         }
 
@@ -2055,7 +2000,7 @@ class ActivationController extends Controller
             $tipo = DB::table('tipo_emergencia_cat')
                 ->when(
                     Schema::hasColumn('tipo_emergencia_cat', 'ti_em-tenant_id'),
-                    static fn ($q) => $q->where('ti_em-tenant_id', $tenantId),
+                    static fn($q) => $q->where('ti_em-tenant_id', $tenantId),
                 )
                 ->where('ti_em-id', $tiEmId)
                 ->first();
@@ -2071,7 +2016,7 @@ class ActivationController extends Controller
             $riesgo = DB::table('riesgo_cat')
                 ->when(
                     Schema::hasColumn('riesgo_cat', 'rie-tenant_id'),
-                    static fn ($q) => $q->where('rie-tenant_id', $tenantId),
+                    static fn($q) => $q->where('rie-tenant_id', $tenantId),
                 )
                 ->where('rie-id', $rieId)
                 ->first();
@@ -2089,7 +2034,7 @@ class ActivationController extends Controller
             $nivel = DB::table('nivel_alerta_cat')
                 ->when(
                     Schema::hasColumn('nivel_alerta_cat', 'ni_al-tenant_id'),
-                    static fn ($q) => $q->where('ni_al-tenant_id', $tenantId),
+                    static fn($q) => $q->where('ni_al-tenant_id', $tenantId),
                 )
                 ->where('ni_al-id', $nivelId)
                 ->first();
@@ -2136,7 +2081,7 @@ class ActivationController extends Controller
             $row = DB::table('activacion_nivel_hist_trs')
                 ->when(
                     Schema::hasColumn('activacion_nivel_hist_trs', 'ac_ni_hi-tenant_id'),
-                    static fn ($q) => $q->where('ac_ni_hi-tenant_id', $tenantId),
+                    static fn($q) => $q->where('ac_ni_hi-tenant_id', $tenantId),
                 )
                 ->where('ac_ni_hi-ac_de_pl_id-fk', $activationId)
                 ->orderByRaw('COALESCE(CAST(`ac_ni_hi-orden` AS SIGNED),0) DESC')
@@ -2162,13 +2107,13 @@ class ActivationController extends Controller
                 $rows = User::query()
                     ->when(
                         Schema::hasColumn('users', 'tenant_id'),
-                        static fn ($q) => $q->where('tenant_id', $tenantId),
+                        static fn($q) => $q->where('tenant_id', $tenantId),
                     )
                     ->get($userColumns);
 
                 foreach ($rows as $row) {
                     $perfil = strtolower(trim((string) ($row->perfil ?? '')));
-                    if (! in_array($perfil, ['director', 'recurso'], true)) {
+                    if (!in_array($perfil, ['director', 'recurso'], true)) {
                         continue;
                     }
                     $email = strtolower(trim((string) ($row->email ?? '')));
@@ -2191,17 +2136,17 @@ class ActivationController extends Controller
                     ->join('persona_mst as p', 'p.per-id', '=', 'prg.pe_ro_gr-per_id-fk')
                     ->when(
                         Schema::hasColumn('persona_rol_grupo_cfg', 'pe_ro_gr-tenant_id'),
-                        static fn ($q) => $q->where('prg.pe_ro_gr-tenant_id', $tenantId),
+                        static fn($q) => $q->where('prg.pe_ro_gr-tenant_id', $tenantId),
                     )
                     ->when(
                         Schema::hasColumn('persona_mst', 'per-tenant_id'),
-                        static fn ($q) => $q->where('p.per-tenant_id', $tenantId),
+                        static fn($q) => $q->where('p.per-tenant_id', $tenantId),
                     )
                     ->whereRaw("UPPER(COALESCE(`prg`.`pe_ro_gr-activo`, 'SI')) <> 'NO'")
                     ->whereRaw("UPPER(COALESCE(`prg`.`pe_ro_gr-tipo_asignacion`, 'SUPLENTE')) IN ('TITULAR','SUPLENTE','LIDER')")
                     ->when(
                         Schema::hasColumn('persona_rol_grupo_cfg', 'pe_ro_gr-fech_fin'),
-                        static fn ($q) => $q->whereNull('prg.pe_ro_gr-fech_fin'),
+                        static fn($q) => $q->whereNull('prg.pe_ro_gr-fech_fin'),
                     )
                     ->get([
                         'p.per-email as email',
@@ -2231,7 +2176,7 @@ class ActivationController extends Controller
         } else {
             $recipientSource = 'test_emails';
             $raw = $tenant?->test_notification_emails;
-            if (! empty($raw)) {
+            if (!empty($raw)) {
                 if (is_string($raw)) {
                     $parts = preg_split('/[;,]+/', $raw) ?: [];
                     foreach ($parts as $p) {
@@ -2257,30 +2202,21 @@ class ActivationController extends Controller
             }
         }
 
-        $subject = $subjectPrefix.$simPrefix.'Resumen '.$scenarioLabel.($tipoLabel ? ' — '.$tipoLabel : '');
-        $escapeHtml = static fn ($value) => htmlspecialchars((string) $value, ENT_QUOTES, 'UTF-8');
+        $subject = $subjectPrefix . $simPrefix . 'Resumen ' . $scenarioLabel . ($tipoLabel ? ' — ' . $tipoLabel : '');
+        $escapeHtml = static fn($value) => htmlspecialchars((string) $value, ENT_QUOTES, 'UTF-8');
         $bodyHtml = '<div style="font-family: Arial, sans-serif; font-size: 14px; color: #111; line-height: 1.6;">'
-            .'<div style="font-size: 16px; font-weight: 700; margin-bottom: 12px;">'.$escapeHtml($subject).'</div>'
-            .'<div style="margin-bottom: 12px;">Se informa el nivel de <strong>'.$escapeHtml($scenarioLabel).'</strong>.</div>'
-            .'<div style="margin: 12px 0; padding: 10px 12px; background: #f6f6f6; border: 1px solid #e5e5e5; border-radius: 8px;">'
-            .($tipoLabel ? '<div><strong>Tipo de emergencia:</strong> '.$escapeHtml($tipoLabel).'</div>' : '')
-            .($riesgoLabel ? '<div><strong>Riesgo identificado:</strong> '.$escapeHtml($riesgoLabel).'</div>' : '')
-            .($nivelLabel ? '<div><strong>Nivel de alerta:</strong> '.$escapeHtml($nivelLabel).'</div>' : '')
-            .($motivoDetalle !== '' ? '<div><strong>Motivo de activación:</strong> '.$escapeHtml($motivoDetalle).'</div>' : '')
-            .'<div><strong>Fecha/hora:</strong> '.$escapeHtml($this->tenantNowDateTime($tenantId)).'</div>'
-            .'</div>'
-            .'<div>En este nivel no se generan acciones operativas.</div>'
-            .'<div style="font-size: 12px; color: #666; margin-top: 10px;">'.$escapeHtml($modeLabel).'</div>'
-            .'</div>';
-        if ($includeCredentials) {
-            $credentialsLines = $this->buildCredentialsLines($tenant, null);
-            if (! empty($credentialsLines)) {
-                $bodyHtml .= '<div style="margin-top: 12px; padding: 10px 12px; border: 1px solid #e5e5e5; border-radius: 8px; background: #fafafa;">'
-                    .'<div style="font-weight: 600; margin-bottom: 6px;">Credenciales de acceso</div>'
-                    .$this->renderNotificationHtml(implode("\n", $credentialsLines))
-                    .'</div>';
-            }
-        }
+            . '<div style="font-size: 16px; font-weight: 700; margin-bottom: 12px;">' . $escapeHtml($subject) . '</div>'
+            . '<div style="margin-bottom: 12px;">Se informa el nivel de <strong>' . $escapeHtml($scenarioLabel) . '</strong>.</div>'
+            . '<div style="margin: 12px 0; padding: 10px 12px; background: #f6f6f6; border: 1px solid #e5e5e5; border-radius: 8px;">'
+            . ($tipoLabel ? '<div><strong>Tipo de emergencia:</strong> ' . $escapeHtml($tipoLabel) . '</div>' : '')
+            . ($riesgoLabel ? '<div><strong>Riesgo identificado:</strong> ' . $escapeHtml($riesgoLabel) . '</div>' : '')
+            . ($nivelLabel ? '<div><strong>Nivel de alerta:</strong> ' . $escapeHtml($nivelLabel) . '</div>' : '')
+            . ($motivoDetalle !== '' ? '<div><strong>Motivo de activación:</strong> ' . $escapeHtml($motivoDetalle) . '</div>' : '')
+            . '<div><strong>Fecha/hora:</strong> ' . $escapeHtml($this->tenantNowDateTime($tenantId)) . '</div>'
+            . '</div>'
+            . '<div>En este nivel no se generan acciones operativas.</div>'
+            . '<div style="font-size: 12px; color: #666; margin-top: 10px;">' . $escapeHtml($modeLabel) . '</div>'
+            . '</div>';
 
         $mode = $this->resolveNotificationMode();
         $sent = 0;
@@ -2318,12 +2254,12 @@ class ActivationController extends Controller
         foreach ($recipients as $email => $displayName) {
             if ($mode === 'file') {
                 $safe = preg_replace('/[^A-Za-z0-9._-]+/', '_', $email) ?: 'persona';
-                $path = 'notifications_outbox/'.$tenantId.'/summary/'.$activationId.'/'.$ts.'-'.$safe.'.html';
+                $path = 'notifications_outbox/' . $tenantId . '/summary/' . $activationId . '/' . $ts . '-' . $safe . '.html';
                 Storage::disk('local')->put($path, $bodyHtml);
                 $filesWritten++;
                 continue;
             }
-            if (! $emailNotificationsEnabled) {
+            if (!$emailNotificationsEnabled) {
                 continue;
             }
 
@@ -2336,12 +2272,12 @@ class ActivationController extends Controller
         foreach ($whatsappRecipients as $phone => $displayName) {
             if ($mode === 'file') {
                 $safe = preg_replace('/[^A-Za-z0-9._-]+/', '_', $phone) ?: 'whatsapp';
-                $path = 'notifications_outbox/'.$tenantId.'/summary/'.$activationId.'/'.$ts.'-wa-'.$safe.'.txt';
-                Storage::disk('local')->put($path, $whatsappMessage."\n");
+                $path = 'notifications_outbox/' . $tenantId . '/summary/' . $activationId . '/' . $ts . '-wa-' . $safe . '.txt';
+                Storage::disk('local')->put($path, $whatsappMessage . "\n");
                 $whatsappFilesWritten++;
                 continue;
             }
-            if (! $whatsappNotificationsEnabled) {
+            if (!$whatsappNotificationsEnabled) {
                 continue;
             }
             $res = $this->sendWhatsappText($tenantId, $phone, $whatsappMessage, ['type' => 'summary', 'activation_id' => $activationId]);
@@ -2353,12 +2289,12 @@ class ActivationController extends Controller
         foreach ($smsRecipients as $phone => $displayName) {
             if ($mode === 'file') {
                 $safe = preg_replace('/[^A-Za-z0-9._-]+/', '_', $phone) ?: 'sms';
-                $path = 'notifications_outbox/'.$tenantId.'/summary/'.$activationId.'/'.$ts.'-sms-'.$safe.'.txt';
-                Storage::disk('local')->put($path, $smsMessage."\n");
+                $path = 'notifications_outbox/' . $tenantId . '/summary/' . $activationId . '/' . $ts . '-sms-' . $safe . '.txt';
+                Storage::disk('local')->put($path, $smsMessage . "\n");
                 $smsFilesWritten++;
                 continue;
             }
-            if (! ((bool) ($channels['sms_enabled'] ?? false))) {
+            if (!((bool) ($channels['sms_enabled'] ?? false))) {
                 continue;
             }
             $res = $this->sendSmsText($tenantId, (string) $phone, $smsMessage, ['type' => 'summary', 'activation_id' => $activationId]);
@@ -2384,9 +2320,9 @@ class ActivationController extends Controller
             'email_subject' => $subject,
             'email_body' => strip_tags($bodyHtml),
             'warnings' => array_values(array_filter([
-                ! $emailNotificationsEnabled ? 'Envío de correos desactivado en configuración del tenant.' : null,
-                ! $whatsappNotificationsEnabled ? 'Envío de WhatsApp desactivado en configuración del tenant.' : null,
-                ! ((bool) ($channels['sms_enabled'] ?? false)) ? 'Envío de SMS desactivado en configuración del tenant.' : null,
+                !$emailNotificationsEnabled ? 'Envío de correos desactivado en configuración del tenant.' : null,
+                !$whatsappNotificationsEnabled ? 'Envío de WhatsApp desactivado en configuración del tenant.' : null,
+                !((bool) ($channels['sms_enabled'] ?? false)) ? 'Envío de SMS desactivado en configuración del tenant.' : null,
             ])),
             'debug' => [
                 'production_mode' => $productionMode,
@@ -2437,7 +2373,7 @@ class ActivationController extends Controller
             $groupName = trim((string) DB::table('grupo_operativo_cat')
                 ->when(
                     Schema::hasColumn('grupo_operativo_cat', 'gr_op-tenant_id'),
-                    static fn ($q) => $q->where('gr_op-tenant_id', $tenantId),
+                    static fn($q) => $q->where('gr_op-tenant_id', $tenantId),
                 )
                 ->where('gr_op-id', $grupoId)
                 ->value('gr_op-nombre'));
@@ -2450,7 +2386,7 @@ class ActivationController extends Controller
             $person = DB::table('persona_mst as p')
                 ->when(
                     Schema::hasColumn('persona_mst', 'per-tenant_id'),
-                    static fn ($q) => $q->where('p.per-tenant_id', $tenantId),
+                    static fn($q) => $q->where('p.per-tenant_id', $tenantId),
                 )
                 ->where('p.per-id', $perId)
                 ->first([
@@ -2502,18 +2438,12 @@ class ActivationController extends Controller
             }
         }
 
-        $subject = 'Cambio de titularidad'.($groupName !== '' ? ' — '.$groupName : '');
+        $subject = 'Cambio de titularidad' . ($groupName !== '' ? ' — ' . $groupName : '');
         $text = "Se confirma que ahora eres titular del grupo operativo.\n"
-            .($personLabel !== '' ? "Nuevo titular: {$personLabel}\n" : '')
-            .($groupName !== '' ? "Grupo operativo: {$groupName}\n" : '')
-            ."Plan activado: {$activationId}\n"
-            .'Accede a la aplicación: https://emta.grupo-tema.com/';
-        if ($includeCredentials) {
-            $credentialsLines = $this->buildCredentialsLines($tenant, $personEmail !== '' ? $personEmail : null);
-            if (! empty($credentialsLines)) {
-                $text = rtrim($text)."\n\n".implode("\n", $credentialsLines);
-            }
-        }
+            . ($personLabel !== '' ? "Nuevo titular: {$personLabel}\n" : '')
+            . ($groupName !== '' ? "Grupo operativo: {$groupName}\n" : '')
+            . "Plan activado: {$activationId}\n"
+            . 'Accede a la aplicación: https://emta.grupo-tema.com/';
         $bodyHtml = $this->renderNotificationHtml($text);
 
         $sent = 0;
@@ -2526,12 +2456,12 @@ class ActivationController extends Controller
         foreach ($recipients as $email => $displayName) {
             if ($mode === 'file') {
                 $safe = preg_replace('/[^A-Za-z0-9._-]+/', '_', $email) ?: 'persona';
-                $path = 'notifications_outbox/'.$tenantId.'/titular/'.$activationId.'/'.$ts.'-'.$safe.'.html';
+                $path = 'notifications_outbox/' . $tenantId . '/titular/' . $activationId . '/' . $ts . '-' . $safe . '.html';
                 Storage::disk('local')->put($path, $bodyHtml);
                 $filesWritten++;
                 continue;
             }
-            if (! $emailNotificationsEnabled) {
+            if (!$emailNotificationsEnabled) {
                 continue;
             }
             Mail::html($bodyHtml, static function ($m) use ($email, $subject): void {
@@ -2542,12 +2472,12 @@ class ActivationController extends Controller
         foreach ($whatsappRecipients as $phone => $displayName) {
             if ($mode === 'file') {
                 $safe = preg_replace('/[^A-Za-z0-9._-]+/', '_', $phone) ?: 'whatsapp';
-                $path = 'notifications_outbox/'.$tenantId.'/titular/'.$activationId.'/'.$ts.'-wa-'.$safe.'.txt';
-                Storage::disk('local')->put($path, $text."\n");
+                $path = 'notifications_outbox/' . $tenantId . '/titular/' . $activationId . '/' . $ts . '-wa-' . $safe . '.txt';
+                Storage::disk('local')->put($path, $text . "\n");
                 $whatsappFilesWritten++;
                 continue;
             }
-            if (! $whatsappNotificationsEnabled) {
+            if (!$whatsappNotificationsEnabled) {
                 continue;
             }
             $res = $this->sendWhatsappText($tenantId, $phone, $text, ['type' => 'titular', 'activation_id' => $activationId]);
@@ -2558,12 +2488,12 @@ class ActivationController extends Controller
         foreach ($smsRecipients as $phone => $displayName) {
             if ($mode === 'file') {
                 $safe = preg_replace('/[^A-Za-z0-9._-]+/', '_', $phone) ?: 'sms';
-                $path = 'notifications_outbox/'.$tenantId.'/titular/'.$activationId.'/'.$ts.'-sms-'.$safe.'.txt';
-                Storage::disk('local')->put($path, $text."\n");
+                $path = 'notifications_outbox/' . $tenantId . '/titular/' . $activationId . '/' . $ts . '-sms-' . $safe . '.txt';
+                Storage::disk('local')->put($path, $text . "\n");
                 $smsFilesWritten++;
                 continue;
             }
-            if (! ((bool) ($channels['sms_enabled'] ?? false))) {
+            if (!((bool) ($channels['sms_enabled'] ?? false))) {
                 continue;
             }
             $res = $this->sendSmsText($tenantId, (string) $phone, $text, ['type' => 'titular', 'activation_id' => $activationId]);
@@ -2588,9 +2518,9 @@ class ActivationController extends Controller
             'email_subject' => $subject,
             'email_body' => strip_tags($bodyHtml),
             'warnings' => array_values(array_filter([
-                ! $emailNotificationsEnabled ? 'Envío de correos desactivado en configuración del tenant.' : null,
-                ! $whatsappNotificationsEnabled ? 'Envío de WhatsApp desactivado en configuración del tenant.' : null,
-                ! ((bool) ($channels['sms_enabled'] ?? false)) ? 'Envío de SMS desactivado en configuración del tenant.' : null,
+                !$emailNotificationsEnabled ? 'Envío de correos desactivado en configuración del tenant.' : null,
+                !$whatsappNotificationsEnabled ? 'Envío de WhatsApp desactivado en configuración del tenant.' : null,
+                !((bool) ($channels['sms_enabled'] ?? false)) ? 'Envío de SMS desactivado en configuración del tenant.' : null,
             ])),
             'debug' => [
                 'production_mode' => $productionMode,
@@ -2617,7 +2547,7 @@ class ActivationController extends Controller
                 if ($url === '') {
                     return '';
                 }
-                return '<a href="'.$url.'" target="_blank" rel="noopener noreferrer">'.$url.'</a>';
+                return '<a href="' . $url . '" target="_blank" rel="noopener noreferrer">' . $url . '</a>';
             },
             $escaped,
         ) ?? $escaped;
@@ -2627,19 +2557,19 @@ class ActivationController extends Controller
     private function buildCredentialsLines(?Tenant $tenant, ?string $email = null): array
     {
         $enabled = (bool) ($tenant?->notifications_include_credentials ?? false);
-        if (! $enabled) {
+        if (!$enabled) {
             return [];
         }
 
         $frontendUrl = rtrim((string) env('FRONTEND_URL', config('app.url')), '/');
-        $loginUrl = $frontendUrl !== '' ? $frontendUrl.'/' : '';
+        $loginUrl = $frontendUrl !== '' ? $frontendUrl . '/' : '';
         $normalizedEmail = strtolower(trim((string) ($email ?? '')));
         $lines = [];
         $resetUrl = '';
         $tenantId = trim((string) ($tenant?->tenant_id ?? ''));
 
         if ($normalizedEmail !== '' && filter_var($normalizedEmail, FILTER_VALIDATE_EMAIL) && $tenantId !== '' && Schema::hasTable('password_reset_tokens')) {
-            $cacheKey = $tenantId.'|'.$normalizedEmail;
+            $cacheKey = $tenantId . '|' . $normalizedEmail;
             $resetUrl = (string) ($this->passwordResetUrlCache[$cacheKey] ?? '');
             if ($resetUrl === '') {
                 $userExists = User::query()
@@ -2671,19 +2601,19 @@ class ActivationController extends Controller
                     if ($tenantId !== '') {
                         $query['tenantId'] = $tenantId;
                     }
-                    $resetUrl = rtrim($frontendUrl, '/').'/reset-password?'.http_build_query($query);
+                    $resetUrl = rtrim($frontendUrl, '/') . '/reset-password?' . http_build_query($query);
                     $this->passwordResetUrlCache[$cacheKey] = $resetUrl;
                 }
             }
         }
 
         if ($resetUrl !== '') {
-            $lines[] = 'Acceso inicial / restablecer contraseña: '.$resetUrl;
+            $lines[] = 'Acceso inicial / restablecer contraseña: ' . $resetUrl;
         } elseif ($loginUrl !== '') {
-            $lines[] = 'Accede a la aplicación: '.$loginUrl;
+            $lines[] = 'Accede a la aplicación: ' . $loginUrl;
         }
         if ($normalizedEmail !== '' && filter_var($normalizedEmail, FILTER_VALIDATE_EMAIL)) {
-            $lines[] = 'Usuario: '.$normalizedEmail;
+            $lines[] = 'Usuario: ' . $normalizedEmail;
         }
         if ($resetUrl !== '') {
             $lines[] = 'Define tu clave desde el enlace anterior.';
@@ -2711,7 +2641,7 @@ class ActivationController extends Controller
     private function resolveNotificationChannels(?Tenant $tenant): array
     {
         $channel = strtolower(trim((string) ($tenant?->notifications_channel ?? 'email')));
-        if (! in_array($channel, ['email', 'whatsapp', 'both', 'email_sms'], true)) {
+        if (!in_array($channel, ['email', 'whatsapp', 'both', 'email_sms'], true)) {
             $channel = 'email';
         }
         $emailEnabledByChannel = $channel === 'email' || $channel === 'both' || $channel === 'email_sms';
@@ -2734,7 +2664,7 @@ class ActivationController extends Controller
         $value = preg_replace('/[()\-\.\s]+/', '', $value) ?? '';
         if (str_starts_with($value, '+')) {
             $digits = preg_replace('/\D+/', '', substr($value, 1)) ?? '';
-            return $digits !== '' ? '+'.$digits : '';
+            return $digits !== '' ? '+' . $digits : '';
         }
 
         return preg_replace('/\D+/', '', $value) ?? '';
@@ -2785,7 +2715,7 @@ class ActivationController extends Controller
                 ]);
                 $res = $this->postWhatsappWebhook($webhookUrl, $payload);
                 if ($res->failed()) {
-                    return ['sent' => false, 'error' => 'webhook '.((string) $res->status()).' '.$res->body()];
+                    return ['sent' => false, 'error' => 'webhook ' . ((string) $res->status()) . ' ' . $res->body()];
                 }
 
                 return ['sent' => true, 'error' => ''];
@@ -2816,13 +2746,13 @@ class ActivationController extends Controller
                 ]);
             if ($response instanceof \GuzzleHttp\Promise\PromiseInterface) {
                 $resolved = $response->wait();
-                if (! $resolved instanceof HttpClientResponse) {
+                if (!$resolved instanceof HttpClientResponse) {
                     return ['sent' => false, 'error' => 'Respuesta inválida de Brevo WhatsApp'];
                 }
                 $response = $resolved;
             }
             if ($response->failed()) {
-                return ['sent' => false, 'error' => 'brevo '.((string) $response->status()).' '.$response->body()];
+                return ['sent' => false, 'error' => 'brevo ' . ((string) $response->status()) . ' ' . $response->body()];
             }
 
             return ['sent' => true, 'error' => ''];
@@ -2837,49 +2767,41 @@ class ActivationController extends Controller
         if ($normalizedPhone === '') {
             return ['sent' => false, 'error' => 'número SMS inválido'];
         }
+
         $provider = strtolower(trim((string) env('NOTIFICATIONS_SMS_PROVIDER', 'brevo')));
-        if ($provider === '') {
-            $provider = 'brevo';
-        }
-        if ($provider === 'none') {
-            return ['sent' => false, 'error' => 'proveedor SMS deshabilitado'];
-        }
 
         try {
+            // --- LÓGICA PARA WEBHOOK ---
             if ($provider === 'webhook') {
                 $webhookUrl = trim((string) env('SMS_WEBHOOK_URL', ''));
-                if ($webhookUrl === '') {
-                    return ['sent' => false, 'error' => 'SMS_WEBHOOK_URL no configurado'];
-                }
                 $payload = array_merge($context, [
                     'tenant_id' => $tenantId,
                     'phone' => $normalizedPhone,
                     'message' => $message,
                 ]);
-                $res = Http::timeout(8)->post($webhookUrl, $payload);
-                if ($res instanceof \GuzzleHttp\Promise\PromiseInterface) {
-                    $resolved = $res->wait();
-                    if (! $resolved instanceof HttpClientResponse) {
-                        return ['sent' => false, 'error' => 'Respuesta inválida del webhook SMS'];
-                    }
-                    $res = $resolved;
-                }
-                if ($res->failed()) {
-                    return ['sent' => false, 'error' => 'webhook '.((string) $res->status()).' '.$res->body()];
-                }
 
+                \Log::info("SMS Webhook Intentando enviar:", $payload);
+                $res = Http::timeout(8)->post($webhookUrl, $payload);
+
+                if ($res->failed()) {
+                    \Log::error("SMS Webhook Falló:", ['status' => $res->status(), 'body' => $res->body()]);
+                    return ['sent' => false, 'error' => 'webhook ' . $res->status()];
+                }
                 return ['sent' => true, 'error' => ''];
             }
 
-            $apiKey = trim((string) config('services.brevo.api_key', ''));
-            if ($apiKey === '') {
-                return ['sent' => false, 'error' => 'BREVO_API_KEY no configurado'];
-            }
-            $sender = trim((string) env('BREVO_SMS_SENDER', ''));
-            if ($sender === '') {
-                return ['sent' => false, 'error' => 'BREVO_SMS_SENDER no configurado'];
-            }
-            $url = trim((string) env('BREVO_SMS_API_URL', 'https://api.brevo.com/v3/transactionalSMS/sms'));
+            // --- LÓGICA PARA BREVO ---
+            $apiKey = config('services.brevo.api_key');
+            $sender = trim((string) env('BREVO_SMS_SENDER', 'Notif'));
+            $url = 'https://api.brevo.com/v3/transactionalSMS/sms';
+
+            // LOG DE PRE-ENVÍO
+            \Log::info("Brevo SMS: Iniciando petición", [
+                'to' => $normalizedPhone,
+                'sender' => mb_substr($sender, 0, 11),
+                'message_preview' => mb_substr($message, 0, 30) . '...'
+            ]);
+
             $response = Http::timeout(12)
                 ->withHeaders([
                     'api-key' => $apiKey,
@@ -2887,25 +2809,36 @@ class ActivationController extends Controller
                     'content-type' => 'application/json',
                 ])
                 ->post($url, [
-                    'sender' => $sender,
+                    'sender' => mb_substr($sender, 0, 11),
                     'recipient' => $normalizedPhone,
-                    'content' => mb_substr($message, 0, 1200),
+                    'content' => $message, // Brevo maneja la concatenación si supera 160
                     'type' => 'transactional',
                 ]);
-            if ($response instanceof \GuzzleHttp\Promise\PromiseInterface) {
-                $resolved = $response->wait();
-                if (! $resolved instanceof HttpClientResponse) {
-                    return ['sent' => false, 'error' => 'Respuesta inválida de Brevo SMS'];
-                }
-                $response = $resolved;
-            }
+
+            // LOG DE RESPUESTA
             if ($response->failed()) {
-                return ['sent' => false, 'error' => 'brevo '.((string) $response->status()).' '.$response->body()];
+                $errorData = $response->json();
+                \Log::error("Brevo SMS Error:", [
+                    'status' => $response->status(),
+                    'response' => $errorData
+                ]);
+
+                return [
+                    'sent' => false,
+                    'error' => 'brevo ' . $response->status() . ': ' . ($errorData['message'] ?? 'Error desconocido')
+                ];
             }
 
+            \Log::info("Brevo SMS Enviado con éxito:", ['response' => $response->json()]);
             return ['sent' => true, 'error' => ''];
+
         } catch (\Throwable $e) {
-            return ['sent' => false, 'error' => trim((string) $e->getMessage())];
+            \Log::critical("SMS Excepción Crítica:", [
+                'message' => $e->getMessage(),
+                'file' => $e->getFile(),
+                'line' => $e->getLine()
+            ]);
+            return ['sent' => false, 'error' => 'Excepción: ' . $e->getMessage()];
         }
     }
 
@@ -2938,7 +2871,7 @@ class ActivationController extends Controller
             $activationGroupId = DB::table('persona_rol_grupo_cfg')
                 ->when(
                     Schema::hasColumn('persona_rol_grupo_cfg', 'pe_ro_gr-tenant_id'),
-                    static fn ($q) => $q->where('pe_ro_gr-tenant_id', $tenantId),
+                    static fn($q) => $q->where('pe_ro_gr-tenant_id', $tenantId),
                 )
                 ->where('pe_ro_gr-per_id-fk', $activationPerId)
                 ->orderByDesc('pe_ro_gr-id')
@@ -2946,10 +2879,10 @@ class ActivationController extends Controller
         }
 
         if (
-            ! Schema::hasTable('ejecucion_accion_trs')
-            || ! Schema::hasTable('asignacion_en_funciones_trs')
-            || ! Schema::hasTable('accion_set_detalle_cfg')
-            || ! Schema::hasTable('persona_mst')
+            !Schema::hasTable('ejecucion_accion_trs')
+            || !Schema::hasTable('asignacion_en_funciones_trs')
+            || !Schema::hasTable('accion_set_detalle_cfg')
+            || !Schema::hasTable('persona_mst')
         ) {
             return response()->json(['message' => 'Missing required tables.'], 422);
         }
@@ -3004,7 +2937,7 @@ class ActivationController extends Controller
         if (empty($people)) {
             if (Schema::hasTable('cronologia_emergencia_trs')) {
                 DB::table('cronologia_emergencia_trs')->insert([
-                    'cr_em-id' => 'CREM-'.Str::uuid()->toString(),
+                    'cr_em-id' => 'CREM-' . Str::uuid()->toString(),
                     'cr_em-tenant_id' => $tenantId,
                     'cr_em-ac_de_pl_id-fk' => $activationId,
                     'cr_em-tipo_emergencia' => 'FIN',
@@ -3035,7 +2968,7 @@ class ActivationController extends Controller
         $testEmails = [];
         $testWhatsappNumbers = [];
         $testSmsNumbers = [];
-        if (! $productionMode) {
+        if (!$productionMode) {
             $raw = $tenant?->test_notification_emails;
             $rawArr = is_array($raw) ? $raw : [];
             $emails = [];
@@ -3061,7 +2994,7 @@ class ActivationController extends Controller
                 $tiEm = DB::table('tipo_emergencia_cat')
                     ->when(
                         Schema::hasColumn('tipo_emergencia_cat', 'ti_em-tenant_id'),
-                        static fn ($q) => $q->where('ti_em-tenant_id', $tenantId),
+                        static fn($q) => $q->where('ti_em-tenant_id', $tenantId),
                     )
                     ->where('ti_em-id', $tiEmId)
                     ->first();
@@ -3081,15 +3014,15 @@ class ActivationController extends Controller
         $smsFilesWritten = 0;
 
         if ($mode === 'file') {
-            $dir = 'notifications_outbox/'.$tenantId.'/'.$activationId;
-            if (! Storage::disk('local')->exists($dir)) {
+            $dir = 'notifications_outbox/' . $tenantId . '/' . $activationId;
+            if (!Storage::disk('local')->exists($dir)) {
                 Storage::disk('local')->makeDirectory($dir);
             }
         }
 
         $label = $isSimulacro ? 'simulacro' : 'emergencia';
         $prefix = $isSimulacro ? '[SIMULACRO] ' : '';
-        $subject = $subjectPrefix.$prefix.'Fin de '.$label.' — '.$activationId;
+        $subject = $subjectPrefix . $prefix . 'Fin de ' . $label . ' — ' . $activationId;
         $detalle = trim((string) ($validated['detalle'] ?? ''));
 
         $index = [
@@ -3108,37 +3041,27 @@ class ActivationController extends Controller
             $emailSent = false;
             $emailError = '';
             $lines = [];
-            $lines[] = 'ACTIVACION: '.$activationId;
-            if (! $productionMode) {
+            $lines[] = 'ACTIVACION: ' . $activationId;
+            if (!$productionMode) {
                 $lines[] = 'MODO: PRUEBA';
             }
-            $lines[] = 'AVISO: Fin de '.$label;
-            $lines[] = 'FECHA/HORA: '.$this->tenantNowDateTime($tenantId);
-            $lines[] = 'PERSONA: '.(string) ($p['nombre'] ?? $p['per_id']);
-            $lines[] = 'EMAIL: '.($to !== '' ? $to : '—');
+            $lines[] = 'AVISO: Fin de ' . $label;
+            $lines[] = 'FECHA/HORA: ' . $this->tenantNowDateTime($tenantId);
+            $lines[] = 'PERSONA: ' . (string) ($p['nombre'] ?? $p['per_id']);
+            $lines[] = 'EMAIL: ' . ($to !== '' ? $to : '—');
             if ($detalle !== '') {
                 $lines[] = '';
                 $lines[] = 'DETALLE:';
                 $lines[] = $detalle;
             }
-            if ($includeCredentials) {
-                $credentialsLines = $this->buildCredentialsLines($tenant, $to !== '' ? $to : null);
-                if (! empty($credentialsLines)) {
-                    $lines[] = '';
-                    $lines[] = 'CREDENCIALES DE ACCESO:';
-                    foreach ($credentialsLines as $line) {
-                        $lines[] = $line;
-                    }
-                }
-            }
-            $body = implode("\n", $lines)."\n";
+            $body = implode("\n", $lines) . "\n";
 
             if ($mode === 'file') {
                 $safeTarget = $productionMode ? ($to !== '' ? $to : (string) ($p['per_id'] ?? 'persona')) : ($testEmails[0] ?? 'test');
                 $safe = preg_replace('/[^A-Za-z0-9._-]+/', '_', $safeTarget) ?: 'persona';
-                $path = 'notifications_outbox/'.$tenantId.'/'.$activationId.'/'.$ts.'-end-'.$safe.'.txt';
+                $path = 'notifications_outbox/' . $tenantId . '/' . $activationId . '/' . $ts . '-end-' . $safe . '.txt';
                 Storage::disk('local')->put($path, $body);
-                $jsonPath = 'notifications_outbox/'.$tenantId.'/'.$activationId.'/'.$ts.'-end-'.$safe.'.json';
+                $jsonPath = 'notifications_outbox/' . $tenantId . '/' . $activationId . '/' . $ts . '-end-' . $safe . '.json';
                 Storage::disk('local')->put($jsonPath, json_encode([
                     'activation_id' => $activationId,
                     'tenant_id' => $tenantId,
@@ -3154,7 +3077,7 @@ class ActivationController extends Controller
                 ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
                 $filesWritten++;
             } else {
-                if (! $emailNotificationsEnabled) {
+                if (!$emailNotificationsEnabled) {
                     $emailSent = false;
                 } elseif ($productionMode) {
                     if ($to !== '') {
@@ -3169,7 +3092,7 @@ class ActivationController extends Controller
                             $emailError = trim((string) $mailErrorEx->getMessage());
                         }
                     }
-                } elseif (! empty($testEmails)) {
+                } elseif (!empty($testEmails)) {
                     Mail::raw($body, static function ($m) use ($testEmails, $subject) {
                         $m->to($testEmails)->subject($subject);
                     });
@@ -3179,7 +3102,7 @@ class ActivationController extends Controller
 
             if (Schema::hasTable('notificacion_envio_trs')) {
                 $insert = [
-                    'no_en-id' => 'NOEN-'.Str::uuid()->toString(),
+                    'no_en-id' => 'NOEN-' . Str::uuid()->toString(),
                     'no_en-tenant_id' => $tenantId,
                     'no_en-ac_de_pl_id-fk' => $activationId,
                     'no_en-per_id-fk' => $p['per_id'],
@@ -3191,11 +3114,11 @@ class ActivationController extends Controller
                     'no_en-estado' => $mode === 'file' ? 'SIMULADO' : ($emailSent ? 'ENVIADO' : 'SIMULADO'),
                     'no_en-num_de_intento' => '0',
                 ];
-                if ($mode !== 'file' && ! $emailSent) {
+                if ($mode !== 'file' && !$emailSent) {
                     $extra = $emailError !== ''
-                        ? '[email no enviado: '.$emailError.']'
-                        : (! $emailNotificationsEnabled ? '[envío de correos desactivado en tenant]' : '[email destinatario no válido o ausente]');
-                    $insert['no_en-mensaje'] = trim(($insert['no_en-mensaje'] ?? '').' '.$extra);
+                        ? '[email no enviado: ' . $emailError . ']'
+                        : (!$emailNotificationsEnabled ? '[envío de correos desactivado en tenant]' : '[email destinatario no válido o ausente]');
+                    $insert['no_en-mensaje'] = trim(($insert['no_en-mensaje'] ?? '') . ' ' . $extra);
                 }
                 if (Schema::hasColumn('notificacion_envio_trs', 'no_en-modo')) {
                     $insert['no_en-modo'] = $modoLabel;
@@ -3228,22 +3151,16 @@ class ActivationController extends Controller
                 $whatsappTargets[$normalized] = $normalized;
             }
         }
-        $whatsappMessage = $subject.($detalle !== '' ? "\n\n".$detalle : '');
-        if ($includeCredentials) {
-            $credentialsLines = $this->buildCredentialsLines($tenant, null);
-            if (! empty($credentialsLines)) {
-                $whatsappMessage = trim($whatsappMessage."\n\n".implode("\n", $credentialsLines));
-            }
-        }
+        $whatsappMessage = $subject . ($detalle !== '' ? "\n\n" . $detalle : '');
         foreach (array_keys($whatsappTargets) as $phone) {
             if ($mode === 'file') {
                 $safe = preg_replace('/[^A-Za-z0-9._-]+/', '_', $phone) ?: 'whatsapp';
-                $path = 'notifications_outbox/'.$tenantId.'/'.$activationId.'/'.$ts.'-end-wa-'.$safe.'.txt';
-                Storage::disk('local')->put($path, $whatsappMessage."\n");
+                $path = 'notifications_outbox/' . $tenantId . '/' . $activationId . '/' . $ts . '-end-wa-' . $safe . '.txt';
+                Storage::disk('local')->put($path, $whatsappMessage . "\n");
                 $whatsappFilesWritten++;
                 continue;
             }
-            if (! $whatsappNotificationsEnabled) {
+            if (!$whatsappNotificationsEnabled) {
                 continue;
             }
             $wa = $this->sendWhatsappText($tenantId, $phone, $whatsappMessage, [
@@ -3276,12 +3193,12 @@ class ActivationController extends Controller
         foreach (array_keys($smsTargets) as $phone) {
             if ($mode === 'file') {
                 $safe = preg_replace('/[^A-Za-z0-9._-]+/', '_', $phone) ?: 'sms';
-                $path = 'notifications_outbox/'.$tenantId.'/'.$activationId.'/'.$ts.'-end-sms-'.$safe.'.txt';
-                Storage::disk('local')->put($path, $smsMessage."\n");
+                $path = 'notifications_outbox/' . $tenantId . '/' . $activationId . '/' . $ts . '-end-sms-' . $safe . '.txt';
+                Storage::disk('local')->put($path, $smsMessage . "\n");
                 $smsFilesWritten++;
                 continue;
             }
-            if (! ((bool) ($channels['sms_enabled'] ?? false))) {
+            if (!((bool) ($channels['sms_enabled'] ?? false))) {
                 continue;
             }
             $sms = $this->sendSmsText($tenantId, $phone, $smsMessage, [
@@ -3294,21 +3211,21 @@ class ActivationController extends Controller
         }
 
         if ($mode === 'file') {
-            $indexPath = 'notifications_outbox/'.$tenantId.'/'.$activationId.'/'.$ts.'-end-index.json';
+            $indexPath = 'notifications_outbox/' . $tenantId . '/' . $activationId . '/' . $ts . '-end-index.json';
             Storage::disk('local')->put($indexPath, json_encode($index, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
             $filesWritten++;
         }
 
         if (Schema::hasTable('cronologia_emergencia_trs')) {
             DB::table('cronologia_emergencia_trs')->insert([
-                'cr_em-id' => 'CREM-'.Str::uuid()->toString(),
+                'cr_em-id' => 'CREM-' . Str::uuid()->toString(),
                 'cr_em-tenant_id' => $tenantId,
                 'cr_em-ac_de_pl_id-fk' => $activationId,
                 'cr_em-tipo_emergencia' => $label,
                 'cr_em-ts_emergencia' => $tenantNow->toDateTimeString(),
                 'cr_em-per_id-fk' => $activationPerId !== '' ? $activationPerId : null,
                 'cr_em-gr_op_id-fk' => $activationGroupId,
-                'cr_em-detalle' => $subject.($detalle !== '' ? (': '.$detalle) : ''),
+                'cr_em-detalle' => $subject . ($detalle !== '' ? (': ' . $detalle) : ''),
                 'cr_em-ref_tabla' => 'notificacion_envio_trs',
                 'cr_em-referencia' => null,
             ]);
@@ -3342,7 +3259,7 @@ class ActivationController extends Controller
             return response()->json(['message' => 'Forbidden.'], 403);
         }
 
-        if (! Schema::hasTable('activacion_del_plan_trs')) {
+        if (!Schema::hasTable('activacion_del_plan_trs')) {
             return response()->json(['message' => 'Missing activacion_del_plan_trs table.'], 422);
         }
 
@@ -3350,12 +3267,12 @@ class ActivationController extends Controller
         $activationIds = DB::table('activacion_del_plan_trs')
             ->when(
                 Schema::hasColumn('activacion_del_plan_trs', 'ac_de_pl-tenant_id'),
-                static fn ($q) => $q->where('ac_de_pl-tenant_id', $tenantId),
+                static fn($q) => $q->where('ac_de_pl-tenant_id', $tenantId),
             )
             ->whereIn(DB::raw("UPPER(COALESCE(`ac_de_pl-estado`, ''))"), $states)
             ->pluck('ac_de_pl-id')
-            ->map(static fn ($id) => trim((string) $id))
-            ->filter(static fn ($id) => $id !== '')
+            ->map(static fn($id) => trim((string) $id))
+            ->filter(static fn($id) => $id !== '')
             ->values();
 
         if ($activationIds->isEmpty()) {
@@ -3392,18 +3309,18 @@ class ActivationController extends Controller
                 $notificacionEnvioIds = DB::table('notificacion_envio_trs')
                     ->when(
                         Schema::hasColumn('notificacion_envio_trs', 'no_en-tenant_id'),
-                        static fn ($q) => $q->where('no_en-tenant_id', $tenantId),
+                        static fn($q) => $q->where('no_en-tenant_id', $tenantId),
                     )
                     ->whereIn('no_en-ac_de_pl_id-fk', $activationIds)
                     ->pluck('no_en-id')
-                    ->map(static fn ($id) => trim((string) $id))
-                    ->filter(static fn ($id) => $id !== '')
+                    ->map(static fn($id) => trim((string) $id))
+                    ->filter(static fn($id) => $id !== '')
                     ->values();
 
                 $counts['notificacion_envio'] = DB::table('notificacion_envio_trs')
                     ->when(
                         Schema::hasColumn('notificacion_envio_trs', 'no_en-tenant_id'),
-                        static fn ($q) => $q->where('no_en-tenant_id', $tenantId),
+                        static fn($q) => $q->where('no_en-tenant_id', $tenantId),
                     )
                     ->whereIn('no_en-ac_de_pl_id-fk', $activationIds)
                     ->delete();
@@ -3413,19 +3330,19 @@ class ActivationController extends Controller
                 $counts['notificacion_confirmacion'] = DB::table('notificacion_confirmacion_trs')
                     ->when(
                         Schema::hasColumn('notificacion_confirmacion_trs', 'no_co-tenant_id'),
-                        static fn ($q) => $q->where('no_co-tenant_id', $tenantId),
+                        static fn($q) => $q->where('no_co-tenant_id', $tenantId),
                     )
                     ->when(
                         $notificacionEnvioIds->isNotEmpty(),
-                        static fn ($q) => $q->whereIn('no_co-no_en_id-fk', $notificacionEnvioIds),
-                        static fn ($q) => $q->whereRaw('1 = 0'),
+                        static fn($q) => $q->whereIn('no_co-no_en_id-fk', $notificacionEnvioIds),
+                        static fn($q) => $q->whereRaw('1 = 0'),
                     )
                     ->delete();
 
                 $counts['notificacion_confirmacion'] += DB::table('notificacion_confirmacion_trs')
                     ->when(
                         Schema::hasColumn('notificacion_confirmacion_trs', 'no_co-tenant_id'),
-                        static fn ($q) => $q->where('no_co-tenant_id', $tenantId),
+                        static fn($q) => $q->where('no_co-tenant_id', $tenantId),
                     )
                     ->where(function ($q): void {
                         $q->whereNull('no_co-no_en_id-fk')->orWhere('no_co-no_en_id-fk', '');
@@ -3437,7 +3354,7 @@ class ActivationController extends Controller
                 $counts['notas_operativas'] = DB::table('notas_operativas_trs')
                     ->when(
                         Schema::hasColumn('notas_operativas_trs', 'no_op-tenant_id'),
-                        static fn ($q) => $q->where('no_op-tenant_id', $tenantId),
+                        static fn($q) => $q->where('no_op-tenant_id', $tenantId),
                     )
                     ->whereIn('no_op-ac_de_pl_id-fk', $activationIds)
                     ->delete();
@@ -3447,7 +3364,7 @@ class ActivationController extends Controller
                 $counts['ejecucion_accion'] = DB::table('ejecucion_accion_trs')
                     ->when(
                         Schema::hasColumn('ejecucion_accion_trs', 'ej_ac-tenant_id'),
-                        static fn ($q) => $q->where('ej_ac-tenant_id', $tenantId),
+                        static fn($q) => $q->where('ej_ac-tenant_id', $tenantId),
                     )
                     ->whereIn('ej_ac-ac_de_pl_id-fk', $activationIds)
                     ->delete();
@@ -3457,7 +3374,7 @@ class ActivationController extends Controller
                 $counts['asignacion_en_funciones'] = DB::table('asignacion_en_funciones_trs')
                     ->when(
                         Schema::hasColumn('asignacion_en_funciones_trs', 'as_en_fu-tenant_id'),
-                        static fn ($q) => $q->where('as_en_fu-tenant_id', $tenantId),
+                        static fn($q) => $q->where('as_en_fu-tenant_id', $tenantId),
                     )
                     ->whereIn('as_en_fu-ac_de_pl_id-fk', $activationIds)
                     ->delete();
@@ -3467,7 +3384,7 @@ class ActivationController extends Controller
                 $counts['activacion_nivel_hist'] = DB::table('activacion_nivel_hist_trs')
                     ->when(
                         Schema::hasColumn('activacion_nivel_hist_trs', 'ac_ni_hi-tenant_id'),
-                        static fn ($q) => $q->where('ac_ni_hi-tenant_id', $tenantId),
+                        static fn($q) => $q->where('ac_ni_hi-tenant_id', $tenantId),
                     )
                     ->whereIn('ac_ni_hi-ac_de_pl_id-fk', $activationIds)
                     ->delete();
@@ -3477,7 +3394,7 @@ class ActivationController extends Controller
                 $counts['cronologia_emergencia'] = DB::table('cronologia_emergencia_trs')
                     ->when(
                         Schema::hasColumn('cronologia_emergencia_trs', 'cr_em-tenant_id'),
-                        static fn ($q) => $q->where('cr_em-tenant_id', $tenantId),
+                        static fn($q) => $q->where('cr_em-tenant_id', $tenantId),
                     )
                     ->whereIn('cr_em-ac_de_pl_id-fk', $activationIds)
                     ->delete();
@@ -3486,7 +3403,7 @@ class ActivationController extends Controller
             $counts['activaciones'] = DB::table('activacion_del_plan_trs')
                 ->when(
                     Schema::hasColumn('activacion_del_plan_trs', 'ac_de_pl-tenant_id'),
-                    static fn ($q) => $q->where('ac_de_pl-tenant_id', $tenantId),
+                    static fn($q) => $q->where('ac_de_pl-tenant_id', $tenantId),
                 )
                 ->whereIn('ac_de_pl-id', $activationIds)
                 ->delete();
@@ -3495,7 +3412,7 @@ class ActivationController extends Controller
         });
 
         foreach ($activationIds as $activationId) {
-            $dir = 'activaciones/'.$tenantId.'/'.$activationId;
+            $dir = 'activaciones/' . $tenantId . '/' . $activationId;
             if (Storage::disk('local')->exists($dir)) {
                 Storage::disk('local')->deleteDirectory($dir);
             }
@@ -3549,7 +3466,7 @@ class ActivationController extends Controller
         }
 
         $email = strtolower(trim((string) ($request->user()?->email ?? '')));
-        if ($email === '' || ! Schema::hasTable('persona_mst')) {
+        if ($email === '' || !Schema::hasTable('persona_mst')) {
             return response()->json([
                 'activation_id' => $activationId,
                 'acciones' => [],
@@ -3559,7 +3476,7 @@ class ActivationController extends Controller
         $persona = DB::table('persona_mst')
             ->when(
                 Schema::hasColumn('persona_mst', 'per-tenant_id'),
-                static fn ($q) => $q->where('per-tenant_id', $tenantId),
+                static fn($q) => $q->where('per-tenant_id', $tenantId),
             )
             ->whereRaw('LOWER(TRIM(`per-email`)) = ?', [$email])
             ->first();
@@ -3573,9 +3490,9 @@ class ActivationController extends Controller
         }
 
         if (
-            ! Schema::hasTable('ejecucion_accion_trs')
-            || ! Schema::hasTable('asignacion_en_funciones_trs')
-            || ! Schema::hasTable('accion_set_detalle_cfg')
+            !Schema::hasTable('ejecucion_accion_trs')
+            || !Schema::hasTable('asignacion_en_funciones_trs')
+            || !Schema::hasTable('accion_set_detalle_cfg')
         ) {
             return response()->json(['message' => 'Missing required tables.'], 422);
         }
@@ -3601,7 +3518,7 @@ class ActivationController extends Controller
 
         $dependencyIds = $rows->pluck('dependencia_id')->filter()->unique()->values()->all();
         $dependencyStatus = [];
-        if (! empty($dependencyIds)) {
+        if (!empty($dependencyIds)) {
             $dependencyStatus = DB::table('ejecucion_accion_trs')
                 ->where('ej_ac-tenant_id', $tenantId)
                 ->where('ej_ac-ac_de_pl_id-fk', $activationId)
@@ -3670,14 +3587,14 @@ class ActivationController extends Controller
         }
 
         $email = strtolower(trim((string) ($request->user()?->email ?? '')));
-        if ($email === '' || ! Schema::hasTable('persona_mst')) {
+        if ($email === '' || !Schema::hasTable('persona_mst')) {
             return response()->json(['message' => 'Persona not found.'], 404);
         }
 
         $persona = DB::table('persona_mst')
             ->when(
                 Schema::hasColumn('persona_mst', 'per-tenant_id'),
-                static fn ($q) => $q->where('per-tenant_id', $tenantId),
+                static fn($q) => $q->where('per-tenant_id', $tenantId),
             )
             ->whereRaw('LOWER(TRIM(`per-email`)) = ?', [$email])
             ->first();
@@ -3687,7 +3604,7 @@ class ActivationController extends Controller
             return response()->json(['message' => 'Persona not found.'], 404);
         }
 
-        if (! Schema::hasTable('ejecucion_accion_trs') || ! Schema::hasTable('asignacion_en_funciones_trs')) {
+        if (!Schema::hasTable('ejecucion_accion_trs') || !Schema::hasTable('asignacion_en_funciones_trs')) {
             return response()->json(['message' => 'Missing required tables.'], 422);
         }
 
@@ -3727,14 +3644,14 @@ class ActivationController extends Controller
         $confirmationRequiresNotifId = Schema::hasTable('notificacion_confirmacion_trs')
             && Schema::hasColumn('notificacion_confirmacion_trs', 'no_co-no_en_id-fk');
         if ($confirmationRequiresNotifId && $noEnId === null) {
-            if (! Schema::hasTable('notificacion_envio_trs') || ! Schema::hasColumn('notificacion_envio_trs', 'no_en-id')) {
+            if (!Schema::hasTable('notificacion_envio_trs') || !Schema::hasColumn('notificacion_envio_trs', 'no_en-id')) {
                 return response()->json([
                     'message' => 'No se pudo vincular la confirmación con su notificación de envío.',
                     'code' => 'CONFIRMATION_NOTIF_LINK_MISSING',
                 ], 422);
             }
 
-            $syntheticNoEnId = 'NOEN-'.Str::uuid()->toString();
+            $syntheticNoEnId = 'NOEN-' . Str::uuid()->toString();
             $syntheticInsert = [];
             if (Schema::hasColumn('notificacion_envio_trs', 'no_en-id')) {
                 $syntheticInsert['no_en-id'] = $syntheticNoEnId;
@@ -3781,7 +3698,7 @@ class ActivationController extends Controller
         if (Schema::hasTable('notificacion_confirmacion_trs')) {
             $payload = [];
             if (Schema::hasColumn('notificacion_confirmacion_trs', 'no_co-id')) {
-                $payload['no_co-id'] = 'NOCO-'.Str::uuid()->toString();
+                $payload['no_co-id'] = 'NOCO-' . Str::uuid()->toString();
             }
             if (Schema::hasColumn('notificacion_confirmacion_trs', 'no_co-tenant_id')) {
                 $payload['no_co-tenant_id'] = $tenantId;
@@ -3799,7 +3716,7 @@ class ActivationController extends Controller
                 $payload['no_co-respuesta'] = $validated['respuesta'] ?? null;
             }
 
-            if (! empty($payload)) {
+            if (!empty($payload)) {
                 DB::table('notificacion_confirmacion_trs')->insert($payload);
                 $insertedConfirmation = true;
             }
@@ -3861,12 +3778,12 @@ class ActivationController extends Controller
         }
 
         $accionDetalleIds = array_values(array_filter(array_map(
-            static fn ($v) => trim((string) $v),
+            static fn($v) => trim((string) $v),
             explode(',', $accionDetalleId),
-        ), static fn ($v) => $v !== ''));
+        ), static fn($v) => $v !== ''));
 
         $accionDetalles = collect();
-        if (! empty($accionDetalleIds) && Schema::hasTable('accion_set_detalle_cfg')) {
+        if (!empty($accionDetalleIds) && Schema::hasTable('accion_set_detalle_cfg')) {
             $detalleQuery = DB::table('accion_set_detalle_cfg')
                 ->whereIn('ac_se_de-id', $accionDetalleIds);
             if (Schema::hasColumn('accion_set_detalle_cfg', 'ac_se_de-tenant_id')) {
@@ -3891,7 +3808,7 @@ class ActivationController extends Controller
         $actionNames = array_values(array_unique($actionNames));
 
         $roleNamesById = [];
-        if (! empty($roleIds) && Schema::hasTable('rol_cat')) {
+        if (!empty($roleIds) && Schema::hasTable('rol_cat')) {
             $roleQuery = DB::table('rol_cat')->whereIn('rol-id', $roleIds);
             if (Schema::hasColumn('rol_cat', 'rol-tenant_id')) {
                 $roleQuery->where('rol-tenant_id', $tenantId);
@@ -3910,7 +3827,7 @@ class ActivationController extends Controller
                 ->where('per-id', $suplenteNew)
                 ->when(
                     Schema::hasColumn('persona_mst', 'per-tenant_id'),
-                    static fn ($q) => $q->where('per-tenant_id', $tenantId),
+                    static fn($q) => $q->where('per-tenant_id', $tenantId),
                 )
                 ->first(['per-nombre', 'per-apellido_1', 'per-apellido_2']);
             if ($personaNew) {
@@ -3941,8 +3858,8 @@ class ActivationController extends Controller
                 'suplente_new_per_id' => $suplenteNew,
                 'suplente_new_nombre' => $suplenteNewNombre,
                 'asignacion_id' => $asignacionId !== '' ? $asignacionId : null,
-                'accion_detalle_ids' => ! empty($accionDetalleIds) ? $accionDetalleIds : null,
-                'accion_detalle_nombre' => ! empty($actionNames) ? implode(', ', $actionNames) : null,
+                'accion_detalle_ids' => !empty($accionDetalleIds) ? $accionDetalleIds : null,
+                'accion_detalle_nombre' => !empty($actionNames) ? implode(', ', $actionNames) : null,
                 'rol_id' => $roleIds[0] ?? null,
                 'rol_nombre' => isset($roleIds[0]) ? ($roleNamesById[$roleIds[0]] ?? $roleIds[0]) : null,
                 'actor' => 'APP',
@@ -3984,7 +3901,7 @@ class ActivationController extends Controller
             $criterios = DB::table('criterio_riesgo_cfg')
                 ->when(
                     Schema::hasColumn('criterio_riesgo_cfg', 'cr_ri-tenant_id'),
-                    static fn ($q) => $q->where('cr_ri-tenant_id', $tenantId),
+                    static fn($q) => $q->where('cr_ri-tenant_id', $tenantId),
                 )
                 ->where('cr_ri-rie_id-fk', $riesgoId)
                 ->whereRaw("UPPER(COALESCE(`cr_ri-activo`, 'SI')) <> 'NO'")
@@ -4033,7 +3950,7 @@ class ActivationController extends Controller
             $niAl = DB::table('nivel_alerta_cat')
                 ->when(
                     Schema::hasColumn('nivel_alerta_cat', 'ni_al-tenant_id'),
-                    static fn ($q) => $q->where('ni_al-tenant_id', $tenantId),
+                    static fn($q) => $q->where('ni_al-tenant_id', $tenantId),
                 )
                 ->where('ni_al-id', $nivelAlertaIdResolved)
                 ->first();
@@ -4046,7 +3963,7 @@ class ActivationController extends Controller
                 $niEm = DB::table('nivel_emergencia_cat')
                     ->when(
                         Schema::hasColumn('nivel_emergencia_cat', 'ni_em-tenant_id'),
-                        static fn ($q) => $q->where('ni_em-tenant_id', $tenantId),
+                        static fn($q) => $q->where('ni_em-tenant_id', $tenantId),
                     )
                     ->where('ni_em-id', $niEmId)
                     ->first();
@@ -4078,7 +3995,7 @@ class ActivationController extends Controller
             $actionSetIds = $this->getActionSets($tenantId, $riesgoId, $nivelAlertaIdResolved);
         }
 
-        $actionSetIds = array_values(array_unique(array_filter($actionSetIds, static fn ($v) => is_string($v) && trim($v) !== '')));
+        $actionSetIds = array_values(array_unique(array_filter($actionSetIds, static fn($v) => is_string($v) && trim($v) !== '')));
         if ($scenario === 'AVISO') {
             $actionSetIds = [];
         }
@@ -4093,7 +4010,7 @@ class ActivationController extends Controller
             $rolesById = DB::table('rol_cat')
                 ->when(
                     Schema::hasColumn('rol_cat', 'rol-tenant_id'),
-                    static fn ($q) => $q->where('rol-tenant_id', $tenantId),
+                    static fn($q) => $q->where('rol-tenant_id', $tenantId),
                 )
                 ->get()
                 ->keyBy('rol-id')
@@ -4105,7 +4022,7 @@ class ActivationController extends Controller
             $gruposById = DB::table('grupo_operativo_cat')
                 ->when(
                     Schema::hasColumn('grupo_operativo_cat', 'gr_op-tenant_id'),
-                    static fn ($q) => $q->where('gr_op-tenant_id', $tenantId),
+                    static fn($q) => $q->where('gr_op-tenant_id', $tenantId),
                 )
                 ->get()
                 ->keyBy('gr_op-id')
@@ -4117,7 +4034,7 @@ class ActivationController extends Controller
             $personasById = DB::table('persona_mst')
                 ->when(
                     Schema::hasColumn('persona_mst', 'per-tenant_id'),
-                    static fn ($q) => $q->where('per-tenant_id', $tenantId),
+                    static fn($q) => $q->where('per-tenant_id', $tenantId),
                 )
                 ->get()
                 ->keyBy('per-id')
@@ -4129,7 +4046,7 @@ class ActivationController extends Controller
             $canalesById = DB::table('canal_comunicacion_cat')
                 ->when(
                     Schema::hasColumn('canal_comunicacion_cat', 'ca_co-tenant_id'),
-                    static fn ($q) => $q->where('ca_co-tenant_id', $tenantId),
+                    static fn($q) => $q->where('ca_co-tenant_id', $tenantId),
                 )
                 ->get()
                 ->keyBy('ca_co-id')
@@ -4137,11 +4054,11 @@ class ActivationController extends Controller
         }
 
         $actionSetsById = [];
-        if (! empty($actionSetIds) && Schema::hasTable('accion_set_cfg')) {
+        if (!empty($actionSetIds) && Schema::hasTable('accion_set_cfg')) {
             $actionSetsById = DB::table('accion_set_cfg')
                 ->when(
                     Schema::hasColumn('accion_set_cfg', 'ac_se-tenant_id'),
-                    static fn ($q) => $q->where('ac_se-tenant_id', $tenantId),
+                    static fn($q) => $q->where('ac_se-tenant_id', $tenantId),
                 )
                 ->whereIn('ac_se-id', $actionSetIds)
                 ->get()
@@ -4154,7 +4071,7 @@ class ActivationController extends Controller
             $accionOperativaById = DB::table('accion_operativa_cfg')
                 ->when(
                     Schema::hasColumn('accion_operativa_cfg', 'ac_op-tenant_id'),
-                    static fn ($q) => $q->where('ac_op-tenant_id', $tenantId),
+                    static fn($q) => $q->where('ac_op-tenant_id', $tenantId),
                 )
                 ->whereRaw("UPPER(COALESCE(`ac_op-activo`, 'SI')) <> 'NO'")
                 ->get()
@@ -4167,7 +4084,7 @@ class ActivationController extends Controller
             $rows = DB::table('persona_rol_grupo_cfg')
                 ->when(
                     Schema::hasColumn('persona_rol_grupo_cfg', 'pe_ro_gr-tenant_id'),
-                    static fn ($q) => $q->where('pe_ro_gr-tenant_id', $tenantId),
+                    static fn($q) => $q->where('pe_ro_gr-tenant_id', $tenantId),
                 )
                 ->whereRaw("UPPER(COALESCE(`pe_ro_gr-activo`, 'SI')) <> 'NO'")
                 ->whereNull('pe_ro_gr-fech_fin')
@@ -4183,11 +4100,11 @@ class ActivationController extends Controller
         }
 
         $acciones = [];
-        if (! empty($actionSetIds) && Schema::hasTable('accion_set_detalle_cfg')) {
+        if (!empty($actionSetIds) && Schema::hasTable('accion_set_detalle_cfg')) {
             $detalles = DB::table('accion_set_detalle_cfg')
                 ->when(
                     Schema::hasColumn('accion_set_detalle_cfg', 'ac_se_de-tenant_id'),
-                    static fn ($q) => $q->where('ac_se_de-tenant_id', $tenantId),
+                    static fn($q) => $q->where('ac_se_de-tenant_id', $tenantId),
                 )
                 ->whereIn('ac_se_de-ac_se_id-fk', $actionSetIds)
                 ->whereRaw("UPPER(COALESCE(`ac_se_de-activo`, 'SI')) <> 'NO'")
@@ -4195,7 +4112,7 @@ class ActivationController extends Controller
                 ->orderBy('ac_se_de-id')
                 ->get();
 
-            if ($detalles->count() === 0 && ! empty($actionSetIds)) {
+            if ($detalles->count() === 0 && !empty($actionSetIds)) {
                 $warnings[] = 'No hay detalles activos en accion_set_detalle_cfg para el/los action set.';
             }
 
@@ -4204,7 +4121,7 @@ class ActivationController extends Controller
                 $rows = DB::table('accion_set_detalle_canal_cfg')
                     ->when(
                         Schema::hasColumn('accion_set_detalle_canal_cfg', 'ac_se_de_ca-tenant_id'),
-                        static fn ($q) => $q->where('ac_se_de_ca-tenant_id', $tenantId),
+                        static fn($q) => $q->where('ac_se_de_ca-tenant_id', $tenantId),
                     )
                     ->whereRaw("UPPER(COALESCE(`ac_se_de_ca-activo`, 'SI')) <> 'NO'")
                     ->get();
@@ -4277,7 +4194,7 @@ class ActivationController extends Controller
                     }
                 }
                 $selectedLeaderGroupId = null;
-                if ($hasMultipleGroups && ! empty($leaderCandidates)) {
+                if ($hasMultipleGroups && !empty($leaderCandidates)) {
                     usort($leaderCandidates, static function ($a, $b) {
                         $ao = (int) ($a['order'] ?? 999);
                         $bo = (int) ($b['order'] ?? 999);
@@ -4429,7 +4346,7 @@ class ActivationController extends Controller
         $rolId = trim((string) ($validated['rol_id'] ?? '')) ?: null;
         $justification = trim((string) ($validated['justificacion'] ?? '')) ?: null;
 
-        if (! Schema::hasTable('activacion_del_plan_trs')) {
+        if (!Schema::hasTable('activacion_del_plan_trs')) {
             return response()->json(['message' => 'Missing activacion_del_plan_trs table.'], 422);
         }
 
@@ -4443,7 +4360,7 @@ class ActivationController extends Controller
                 ->where('ac_de_pl-id', $activationId)
                 ->first();
 
-            if (! $activation) {
+            if (!$activation) {
                 return response()->json(['message' => 'Activation not found.'], 404);
             }
 
@@ -4453,7 +4370,7 @@ class ActivationController extends Controller
                 $previousLevel = DB::table('activacion_nivel_hist_trs')
                     ->when(
                         Schema::hasColumn('activacion_nivel_hist_trs', 'ac_ni_hi-tenant_id'),
-                        static fn ($q) => $q->where('ac_ni_hi-tenant_id', $tenantId),
+                        static fn($q) => $q->where('ac_ni_hi-tenant_id', $tenantId),
                     )
                     ->where('ac_ni_hi-ac_de_pl_id-fk', $activationId)
                     ->whereRaw("UPPER(COALESCE(`ac_ni_hi-activo`, 'SI')) <> 'NO'")
@@ -4468,18 +4385,18 @@ class ActivationController extends Controller
                     ->where('ni_al-id', $newLevelId)
                     ->when(
                         Schema::hasColumn('nivel_alerta_cat', 'ni_al-tenant_id'),
-                        static fn ($q) => $q->where('ni_al-tenant_id', $tenantId),
+                        static fn($q) => $q->where('ni_al-tenant_id', $tenantId),
                     )
                     ->first();
             }
 
-            if (! $niAl) {
+            if (!$niAl) {
                 return response()->json(['message' => 'Level not found.'], 422);
             }
 
             $actionSetIds = $this->getActionSets($tenantId, $riesgoId, $newLevelId);
 
-            $actionSetIds = array_values(array_unique(array_filter($actionSetIds, static fn ($v) => is_string($v) && trim($v) !== '')));
+            $actionSetIds = array_values(array_unique(array_filter($actionSetIds, static fn($v) => is_string($v) && trim($v) !== '')));
             $actionSetId = $actionSetIds[0] ?? null;
 
             if (Schema::hasTable('activacion_nivel_hist_trs')) {
@@ -4489,7 +4406,7 @@ class ActivationController extends Controller
                     ->update(['ac_ni_hi-activo' => 'NO']);
 
                 DB::table('activacion_nivel_hist_trs')->insert([
-                    'ac_ni_hi-id' => 'ACNI-'.Str::uuid()->toString(),
+                    'ac_ni_hi-id' => 'ACNI-' . Str::uuid()->toString(),
                     'ac_ni_hi-tenant_id' => $tenantId,
                     'ac_ni_hi-ac_de_pl_id-fk' => $activationId,
                     'ac_ni_hi-ni_al_id-fk' => $newLevelId,
@@ -4514,7 +4431,7 @@ class ActivationController extends Controller
                 $detalles = DB::table('accion_set_detalle_cfg')
                     ->when(
                         Schema::hasColumn('accion_set_detalle_cfg', 'ac_se_de-tenant_id'),
-                        static fn ($q) => $q->where('ac_se_de-tenant_id', $tenantId),
+                        static fn($q) => $q->where('ac_se_de-tenant_id', $tenantId),
                     )
                     ->where('ac_se_de-ac_se_id-fk', $actionSetId)
                     ->whereRaw("UPPER(COALESCE(`ac_se_de-activo`, 'SI')) <> 'NO'")
@@ -4534,11 +4451,11 @@ class ActivationController extends Controller
                     $defaultTipoAsignacion = 'TITULAR';
 
                     if ($rolIdStr !== '' && Schema::hasTable('persona_rol_grupo_cfg')) {
-                        if (! array_key_exists($rolIdStr, $personaRolGrupoByRol)) {
+                        if (!array_key_exists($rolIdStr, $personaRolGrupoByRol)) {
                             $query = DB::table('persona_rol_grupo_cfg')
                                 ->when(
                                     Schema::hasColumn('persona_rol_grupo_cfg', 'pe_ro_gr-tenant_id'),
-                                    static fn ($q) => $q->where('pe_ro_gr-tenant_id', $tenantId),
+                                    static fn($q) => $q->where('pe_ro_gr-tenant_id', $tenantId),
                                 )
                                 ->where('pe_ro_gr-rol_id-fk', $rolIdStr);
                             if (Schema::hasColumn('persona_rol_grupo_cfg', 'pe_ro_gr-activo')) {
@@ -4602,7 +4519,7 @@ class ActivationController extends Controller
 
                     $asignacionId = null;
                     if (Schema::hasTable('asignacion_en_funciones_trs')) {
-                        $assignmentKey = trim((string) $defaultPerId).'|'.trim((string) ($resolvedGroupId ?? '')).'|'.trim((string) $defaultTipoAsignacion);
+                        $assignmentKey = trim((string) $defaultPerId) . '|' . trim((string) ($resolvedGroupId ?? '')) . '|' . trim((string) $defaultTipoAsignacion);
                         if ($defaultPerId !== null && $defaultPerId !== '' && isset($asignacionByKey[$assignmentKey])) {
                             $asignacionId = $asignacionByKey[$assignmentKey];
                         }
@@ -4610,19 +4527,19 @@ class ActivationController extends Controller
                             $existingAsign = DB::table('asignacion_en_funciones_trs')
                                 ->when(
                                     Schema::hasColumn('asignacion_en_funciones_trs', 'as_en_fu-tenant_id'),
-                                    static fn ($q) => $q->where('as_en_fu-tenant_id', $tenantId),
+                                    static fn($q) => $q->where('as_en_fu-tenant_id', $tenantId),
                                 )
                                 ->where('as_en_fu-ac_de_pl_id-fk', $activationId)
-                                ->when($resolvedGroupId !== null, static fn ($q) => $q->where('as_en_fu-gr_op_id-fk', $resolvedGroupId))
-                                ->when($defaultPerId !== null && $defaultPerId !== '', static fn ($q) => $q->where('as_en_fu-per_id-fk', $defaultPerId))
-                                ->when($defaultTipoAsignacion !== '', static fn ($q) => $q->where('as_en_fu-tipo_asignacion', $defaultTipoAsignacion))
+                                ->when($resolvedGroupId !== null, static fn($q) => $q->where('as_en_fu-gr_op_id-fk', $resolvedGroupId))
+                                ->when($defaultPerId !== null && $defaultPerId !== '', static fn($q) => $q->where('as_en_fu-per_id-fk', $defaultPerId))
+                                ->when($defaultTipoAsignacion !== '', static fn($q) => $q->where('as_en_fu-tipo_asignacion', $defaultTipoAsignacion))
                                 ->orderBy('as_en_fu-ts_ini', 'desc')
                                 ->first();
 
                             if ($existingAsign) {
                                 $asignacionId = $existingAsign->{'as_en_fu-id'};
                             } else {
-                                $asignacionId = 'ASEF-'.Str::uuid()->toString();
+                                $asignacionId = 'ASEF-' . Str::uuid()->toString();
                                 DB::table('asignacion_en_funciones_trs')->insert([
                                     'as_en_fu-id' => $asignacionId,
                                     'as_en_fu-tenant_id' => $tenantId,
@@ -4643,7 +4560,7 @@ class ActivationController extends Controller
 
                     if (Schema::hasTable('ejecucion_accion_trs')) {
                         DB::table('ejecucion_accion_trs')->insert([
-                            'ej_ac-id' => 'EJAC-'.Str::uuid()->toString(),
+                            'ej_ac-id' => 'EJAC-' . Str::uuid()->toString(),
                             'ej_ac-tenant_id' => $tenantId,
                             'ej_ac-ac_de_pl_id-fk' => $activationId,
                             'ej_ac-gr_op_id-fk' => $resolvedGroupId,
@@ -4697,7 +4614,7 @@ class ActivationController extends Controller
             return response()->json(['message' => 'Invalid activation id.'], 422);
         }
 
-        if (! Schema::hasTable('activacion_del_plan_trs')) {
+        if (!Schema::hasTable('activacion_del_plan_trs')) {
             return response()->json(['message' => 'Missing activacion_del_plan_trs table.'], 422);
         }
 
@@ -4706,7 +4623,7 @@ class ActivationController extends Controller
                 ->where('ac_de_pl-tenant_id', $tenantId)
                 ->where('ac_de_pl-id', $activationId)
                 ->first();
-            if (! $activation) {
+            if (!$activation) {
                 return response()->json(['message' => 'Activation not found.'], 404);
             }
 
@@ -4775,25 +4692,25 @@ class ActivationController extends Controller
             return response()->json(['message' => 'Invalid activation id.'], 422);
         }
 
-        if (! Schema::hasTable('activacion_del_plan_trs')) {
+        if (!Schema::hasTable('activacion_del_plan_trs')) {
             return response()->json(['message' => 'Missing activacion_del_plan_trs table.'], 422);
         }
 
         $activationExists = DB::table('activacion_del_plan_trs')
             ->when(
                 Schema::hasColumn('activacion_del_plan_trs', 'ac_de_pl-tenant_id'),
-                static fn ($q) => $q->where('ac_de_pl-tenant_id', $tenantId),
+                static fn($q) => $q->where('ac_de_pl-tenant_id', $tenantId),
             )
             ->where('ac_de_pl-id', $activationId)
             ->exists();
-        if (! $activationExists) {
+        if (!$activationExists) {
             return response()->json(['message' => 'Activation not found.'], 404);
         }
 
         $activationRow = DB::table('activacion_del_plan_trs')
             ->when(
                 Schema::hasColumn('activacion_del_plan_trs', 'ac_de_pl-tenant_id'),
-                static fn ($q) => $q->where('ac_de_pl-tenant_id', $tenantId),
+                static fn($q) => $q->where('ac_de_pl-tenant_id', $tenantId),
             )
             ->where('ac_de_pl-id', $activationId)
             ->first(['ac_de_pl-rie_id-fk', 'ac_de_pl-ni_al_id-fk-inicial']);
@@ -4832,7 +4749,7 @@ class ActivationController extends Controller
             $asignaciones = DB::table('asignacion_en_funciones_trs')
                 ->when(
                     Schema::hasColumn('asignacion_en_funciones_trs', 'as_en_fu-tenant_id'),
-                    static fn ($q) => $q->where('as_en_fu-tenant_id', $tenantId),
+                    static fn($q) => $q->where('as_en_fu-tenant_id', $tenantId),
                 )
                 ->where('as_en_fu-ac_de_pl_id-fk', $activationId)
                 ->get($asignacionColumns);
@@ -4850,7 +4767,7 @@ class ActivationController extends Controller
             $ejecRows = DB::table('ejecucion_accion_trs')
                 ->when(
                     Schema::hasColumn('ejecucion_accion_trs', 'ej_ac-tenant_id'),
-                    static fn ($q) => $q->where('ej_ac-tenant_id', $tenantId),
+                    static fn($q) => $q->where('ej_ac-tenant_id', $tenantId),
                 )
                 ->where('ej_ac-ac_de_pl_id-fk', $activationId)
                 ->get([
@@ -4871,7 +4788,7 @@ class ActivationController extends Controller
             $nivelQuery = DB::table('activacion_nivel_hist_trs')
                 ->when(
                     Schema::hasColumn('activacion_nivel_hist_trs', 'ac_ni_hi-tenant_id'),
-                    static fn ($q) => $q->where('ac_ni_hi-tenant_id', $tenantId),
+                    static fn($q) => $q->where('ac_ni_hi-tenant_id', $tenantId),
                 )
                 ->where('ac_ni_hi-ac_de_pl_id-fk', $activationId);
             if ($hasNivelOrden) {
@@ -4889,13 +4806,13 @@ class ActivationController extends Controller
         $nivelIdsOrdered = [];
         foreach ($nivelRows as $n) {
             $nid = trim((string) ($n->{'ac_ni_hi-ni_al_id-fk'} ?? ''));
-            if ($nid !== '' && ! isset($nivelIds[$nid])) {
+            if ($nid !== '' && !isset($nivelIds[$nid])) {
                 $nivelIds[$nid] = true;
                 $nivelIdsOrdered[] = $nid;
             }
         }
         $nivelInicialId = trim((string) ($activationRow?->{'ac_de_pl-ni_al_id-fk-inicial'} ?? ''));
-        if ($nivelInicialId !== '' && ! isset($nivelIds[$nivelInicialId])) {
+        if ($nivelInicialId !== '' && !isset($nivelIds[$nivelInicialId])) {
             $nivelIds[$nivelInicialId] = true;
             $nivelIdsOrdered[] = $nivelInicialId;
         }
@@ -4943,20 +4860,20 @@ class ActivationController extends Controller
                 $gid = trim((string) ($asignacionById[$asignacionId]?->{'as_en_fu-gr_op_id-fk'} ?? ''));
             }
             $groupKey = $gid !== '' ? $gid : 'SIN_GRUPO';
-            $key = $groupKey.'|'.$detalleId;
+            $key = $groupKey . '|' . $detalleId;
             $ts = trim((string) ($row->{'ej_ac-ts_fin'} ?? $row->{'ej_ac-ts_ini'} ?? ''));
             $prev = $latestEjecByKey[$key] ?? null;
             $prevTs = $prev ? trim((string) ($prev->{'ej_ac-ts_fin'} ?? $prev->{'ej_ac-ts_ini'} ?? '')) : '';
-            if (! $prev || $ts > $prevTs) {
+            if (!$prev || $ts > $prevTs) {
                 $latestEjecByKey[$key] = $row;
             }
         }
 
-        if (! empty($actionSetIds) && Schema::hasTable('accion_set_detalle_cfg')) {
+        if (!empty($actionSetIds) && Schema::hasTable('accion_set_detalle_cfg')) {
             $detallesPorSetQuery = DB::table('accion_set_detalle_cfg')
                 ->when(
                     Schema::hasColumn('accion_set_detalle_cfg', 'ac_se_de-tenant_id'),
-                    static fn ($q) => $q->where('ac_se_de-tenant_id', $tenantId),
+                    static fn($q) => $q->where('ac_se_de-tenant_id', $tenantId),
                 )
                 ->whereIn('ac_se_de-ac_se_id-fk', array_keys($actionSetIds));
             if (Schema::hasColumn('accion_set_detalle_cfg', 'ac_se_de-activo')) {
@@ -4975,7 +4892,7 @@ class ActivationController extends Controller
         }
 
         $detalleById = [];
-        if (Schema::hasTable('accion_set_detalle_cfg') && ! empty($detalleIds)) {
+        if (Schema::hasTable('accion_set_detalle_cfg') && !empty($detalleIds)) {
             $detalleColumns = ['ac_se_de-id'];
             if (Schema::hasColumn('accion_set_detalle_cfg', 'ac_se_de-rol_id-fk')) {
                 $detalleColumns[] = 'ac_se_de-rol_id-fk';
@@ -4992,7 +4909,7 @@ class ActivationController extends Controller
             $detalles = DB::table('accion_set_detalle_cfg')
                 ->when(
                     Schema::hasColumn('accion_set_detalle_cfg', 'ac_se_de-tenant_id'),
-                    static fn ($q) => $q->where('ac_se_de-tenant_id', $tenantId),
+                    static fn($q) => $q->where('ac_se_de-tenant_id', $tenantId),
                 )
                 ->whereIn('ac_se_de-id', array_keys($detalleIds))
                 ->get($detalleColumns);
@@ -5007,14 +4924,14 @@ class ActivationController extends Controller
 
         $opById = [];
         $opIds = array_values(array_filter(array_map(
-            static fn ($d) => trim((string) ($d?->{'ac_se_de-ac_op_id-fk'} ?? '')),
+            static fn($d) => trim((string) ($d?->{'ac_se_de-ac_op_id-fk'} ?? '')),
             $detalleById
         )));
-        if (Schema::hasTable('accion_operativa_cfg') && ! empty($opIds)) {
+        if (Schema::hasTable('accion_operativa_cfg') && !empty($opIds)) {
             $ops = DB::table('accion_operativa_cfg')
                 ->when(
                     Schema::hasColumn('accion_operativa_cfg', 'ac_op-tenant_id'),
-                    static fn ($q) => $q->where('ac_op-tenant_id', $tenantId),
+                    static fn($q) => $q->where('ac_op-tenant_id', $tenantId),
                 )
                 ->whereIn('ac_op-id', $opIds)
                 ->get(['ac_op-id', 'ac_op-cod', 'ac_op-descrip']);
@@ -5040,7 +4957,7 @@ class ActivationController extends Controller
         }
 
         $personaById = [];
-        if (Schema::hasTable('persona_mst') && ! empty($personaIds)) {
+        if (Schema::hasTable('persona_mst') && !empty($personaIds)) {
             $personaColumns = ['per-id'];
             foreach (['per-nombre', 'per-apellido_1', 'per-apellido_2', 'per-email'] as $col) {
                 if (Schema::hasColumn('persona_mst', $col)) {
@@ -5050,7 +4967,7 @@ class ActivationController extends Controller
             $personas = DB::table('persona_mst')
                 ->when(
                     Schema::hasColumn('persona_mst', 'per-tenant_id'),
-                    static fn ($q) => $q->where('per-tenant_id', $tenantId),
+                    static fn($q) => $q->where('per-tenant_id', $tenantId),
                 )
                 ->whereIn('per-id', array_keys($personaIds))
                 ->get($personaColumns);
@@ -5074,7 +4991,7 @@ class ActivationController extends Controller
                 continue;
             }
             $asg = $asignacionById[$asignacionId] ?? null;
-            if (! $asg) {
+            if (!$asg) {
                 continue;
             }
             $tipo = strtoupper(trim((string) ($asg->{'as_en_fu-tipo_asignacion'} ?? '')));
@@ -5090,10 +5007,10 @@ class ActivationController extends Controller
                 $gid = trim((string) ($asg->{'as_en_fu-gr_op_id-fk'} ?? ''));
             }
             $groupKey = $gid !== '' ? $gid : 'SIN_GRUPO';
-            $key = $groupKey.'|'.$detalleId;
+            $key = $groupKey . '|' . $detalleId;
             $ts = trim((string) ($asg->{'as_en_fu-ts_ini'} ?? $row->{'ej_ac-ts_ini'} ?? ''));
             $prev = $titularOriginalByKey[$key] ?? null;
-            if (! $prev || strcmp((string) ($prev['ts'] ?? ''), $ts) > 0) {
+            if (!$prev || strcmp((string) ($prev['ts'] ?? ''), $ts) > 0) {
                 $titularOriginalByKey[$key] = ['per_id' => $perId, 'ts' => $ts];
             }
         }
@@ -5108,7 +5025,7 @@ class ActivationController extends Controller
                 $sentQuery = DB::table('notificacion_envio_trs')
                     ->when(
                         Schema::hasColumn('notificacion_envio_trs', 'no_en-tenant_id'),
-                        static fn ($q) => $q->where('no_en-tenant_id', $tenantId),
+                        static fn($q) => $q->where('no_en-tenant_id', $tenantId),
                     )
                     ->where('no_en-ac_de_pl_id-fk', $activationId)
                     ->whereNotNull('no_en-per_id-fk')
@@ -5127,7 +5044,7 @@ class ActivationController extends Controller
                     if ($perId === '' || $ts === '') {
                         continue;
                     }
-                    if (! array_key_exists($perId, $notificationTsByPersonaId)) {
+                    if (!array_key_exists($perId, $notificationTsByPersonaId)) {
                         $notificationTsByPersonaId[$perId] = $ts;
                     }
                     $noEnId = trim((string) ($n->{'no_en-id'} ?? ''));
@@ -5150,7 +5067,8 @@ class ActivationController extends Controller
                 }
             }
             $notifIds = array_values(array_unique($notifIds));
-            if (! empty($notifIds)
+            if (
+                !empty($notifIds)
                 && Schema::hasColumn('notificacion_confirmacion_trs', 'no_co-no_en_id-fk')
                 && Schema::hasColumn('notificacion_confirmacion_trs', 'no_co-confirmado')
             ) {
@@ -5161,7 +5079,7 @@ class ActivationController extends Controller
                 $confirmRows = DB::table('notificacion_confirmacion_trs')
                     ->when(
                         Schema::hasColumn('notificacion_confirmacion_trs', 'no_co-tenant_id'),
-                        static fn ($q) => $q->where('no_co-tenant_id', $tenantId),
+                        static fn($q) => $q->where('no_co-tenant_id', $tenantId),
                     )
                     ->whereIn('no_co-no_en_id-fk', $notifIds)
                     ->orderByDesc('no_co-ts')
@@ -5205,7 +5123,7 @@ class ActivationController extends Controller
             $rolGroupQuery = DB::table('persona_rol_grupo_cfg')
                 ->when(
                     Schema::hasColumn('persona_rol_grupo_cfg', 'pe_ro_gr-tenant_id'),
-                    static fn ($q) => $q->where('pe_ro_gr-tenant_id', $tenantId),
+                    static fn($q) => $q->where('pe_ro_gr-tenant_id', $tenantId),
                 );
             if (Schema::hasColumn('persona_rol_grupo_cfg', 'pe_ro_gr-activo')) {
                 $rolGroupQuery->where(function ($q) {
@@ -5237,7 +5155,7 @@ class ActivationController extends Controller
             }
             $ts = trim((string) ($asg->{'as_en_fu-ts_ini'} ?? ''));
             $existingGroup = $latestAsignacionByGroup[$gid] ?? null;
-            if (! $existingGroup || strcmp((string) ($existingGroup['ts'] ?? ''), $ts) <= 0) {
+            if (!$existingGroup || strcmp((string) ($existingGroup['ts'] ?? ''), $ts) <= 0) {
                 $latestAsignacionByGroup[$gid] = ['id' => $asgId, 'ts' => $ts];
             }
             $tipo = strtoupper(trim((string) ($asg->{'as_en_fu-tipo_asignacion'} ?? '')));
@@ -5249,9 +5167,9 @@ class ActivationController extends Controller
                 if ($rolId === '') {
                     continue;
                 }
-                $key = $gid.'|'.$rolId;
+                $key = $gid . '|' . $rolId;
                 $existing = $latestAsignacionByGroupRole[$key] ?? null;
-                if (! $existing || strcmp((string) ($existing['ts'] ?? ''), $ts) <= 0) {
+                if (!$existing || strcmp((string) ($existing['ts'] ?? ''), $ts) <= 0) {
                     $latestAsignacionByGroupRole[$key] = ['id' => $asgId, 'ts' => $ts];
                 }
             }
@@ -5262,8 +5180,8 @@ class ActivationController extends Controller
             $rolId = trim((string) ($detalle?->{'ac_se_de-rol_id-fk'} ?? ''));
             $gid = $rolId !== '' ? trim((string) ($rolToGrupoId[$rolId] ?? '')) : '';
             $groupKey = $gid !== '' ? $gid : 'SIN_GRUPO';
-            $key = $groupKey.'|'.$detalleId;
-            if (! isset($latestEjecByKey[$key])) {
+            $key = $groupKey . '|' . $detalleId;
+            if (!isset($latestEjecByKey[$key])) {
                 $allRowKeys[] = $key;
             }
         }
@@ -5275,7 +5193,7 @@ class ActivationController extends Controller
             $manualDelegationLogs = DB::table('audit_log_trs')
                 ->when(
                     Schema::hasColumn('audit_log_trs', 'tenant_id'),
-                    static fn ($q) => $q->where('tenant_id', $tenantId),
+                    static fn($q) => $q->where('tenant_id', $tenantId),
                 )
                 ->where('plan_id', $activationId)
                 ->whereIn('event_type', ['delegation_created', 'delegation_updated'])
@@ -5297,7 +5215,7 @@ class ActivationController extends Controller
             $op = $opById[$opId] ?? null;
             $asignacionId = trim((string) ($ejec?->{'ej_ac-as_en_fu_id-fk'} ?? ''));
             if ($asignacionId === '' && $groupKey !== 'SIN_GRUPO' && $rolId !== '') {
-                $asignacionId = (string) ($latestAsignacionByGroupRole[$groupKey.'|'.$rolId]['id'] ?? '');
+                $asignacionId = (string) ($latestAsignacionByGroupRole[$groupKey . '|' . $rolId]['id'] ?? '');
             }
             if ($asignacionId === '' && $groupKey !== 'SIN_GRUPO') {
                 $asignacionId = (string) ($latestAsignacionByGroup[$groupKey]['id'] ?? '');
@@ -5384,7 +5302,7 @@ class ActivationController extends Controller
             } else {
                 $pending++;
             }
-            if (! empty($row['delegated_manual'])) {
+            if (!empty($row['delegated_manual'])) {
                 $delegatedCount++;
             }
             $duration = $row['duration_minutes'];
@@ -5484,19 +5402,19 @@ class ActivationController extends Controller
             return response()->json(['message' => 'Invalid activation id.'], 422);
         }
 
-        if (! Schema::hasTable('activacion_del_plan_trs')) {
+        if (!Schema::hasTable('activacion_del_plan_trs')) {
             return response()->json(['message' => 'Missing activacion_del_plan_trs table.'], 422);
         }
 
         $activationExists = DB::table('activacion_del_plan_trs')
             ->when(
                 Schema::hasColumn('activacion_del_plan_trs', 'ac_de_pl-tenant_id'),
-                static fn ($q) => $q->where('ac_de_pl-tenant_id', $tenantId),
+                static fn($q) => $q->where('ac_de_pl-tenant_id', $tenantId),
             )
             ->where('ac_de_pl-id', $activationId)
             ->exists();
 
-        if (! $activationExists) {
+        if (!$activationExists) {
             return response()->json(['message' => 'Activation not found.'], 404);
         }
 
@@ -5515,7 +5433,7 @@ class ActivationController extends Controller
                     ->exists();
             }
 
-            if (! $allowed) {
+            if (!$allowed) {
                 return response()->json(['message' => 'Access denied.'], 403);
             }
         }
@@ -5525,7 +5443,7 @@ class ActivationController extends Controller
             $nivelRow = DB::table('activacion_nivel_hist_trs')
                 ->when(
                     Schema::hasColumn('activacion_nivel_hist_trs', 'ac_ni_hi-tenant_id'),
-                    static fn ($q) => $q->where('ac_ni_hi-tenant_id', $tenantId),
+                    static fn($q) => $q->where('ac_ni_hi-tenant_id', $tenantId),
                 )
                 ->where('ac_ni_hi-ac_de_pl_id-fk', $activationId)
                 ->orderByRaw("CASE WHEN UPPER(COALESCE(`ac_ni_hi-activo`, 'NO')) = 'SI' THEN 0 ELSE 1 END ASC")
@@ -5544,7 +5462,7 @@ class ActivationController extends Controller
             $totalAcciones = DB::table('accion_set_detalle_cfg')
                 ->when(
                     Schema::hasColumn('accion_set_detalle_cfg', 'ac_se_de-tenant_id'),
-                    static fn ($q) => $q->where('ac_se_de-tenant_id', $tenantId),
+                    static fn($q) => $q->where('ac_se_de-tenant_id', $tenantId),
                 )
                 ->where('ac_se_de-ac_se_id-fk', $actionSetId)
                 ->whereRaw("UPPER(COALESCE(`ac_se_de-activo`, 'SI')) <> 'NO'")
@@ -5559,7 +5477,7 @@ class ActivationController extends Controller
             $ejecuciones = DB::table('ejecucion_accion_trs')
                 ->when(
                     Schema::hasColumn('ejecucion_accion_trs', 'ej_ac-tenant_id'),
-                    static fn ($q) => $q->where('ej_ac-tenant_id', $tenantId),
+                    static fn($q) => $q->where('ej_ac-tenant_id', $tenantId),
                 )
                 ->where('ej_ac-ac_de_pl_id-fk', $activationId)
                 ->get(['ej_ac-gr_op_id-fk', 'ej_ac-estado', 'ej_ac-ts_fin']);
@@ -5583,11 +5501,11 @@ class ActivationController extends Controller
         $involvedGroupIds = array_keys($involvedGroupIds);
 
         $grupos = [];
-        if (Schema::hasTable('grupo_operativo_cat') && ! empty($involvedGroupIds)) {
+        if (Schema::hasTable('grupo_operativo_cat') && !empty($involvedGroupIds)) {
             $grupos = DB::table('grupo_operativo_cat')
                 ->when(
                     Schema::hasColumn('grupo_operativo_cat', 'gr_op-tenant_id'),
-                    static fn ($q) => $q->where('gr_op-tenant_id', $tenantId),
+                    static fn($q) => $q->where('gr_op-tenant_id', $tenantId),
                 )
                 ->whereIn('gr_op-id', $involvedGroupIds)
                 ->orderByRaw("CAST(COALESCE(`gr_op-ord_vis`, '0') AS UNSIGNED) ASC")
@@ -5603,7 +5521,7 @@ class ActivationController extends Controller
             $sent = DB::table('notificacion_envio_trs')
                 ->when(
                     Schema::hasColumn('notificacion_envio_trs', 'no_en-tenant_id'),
-                    static fn ($q) => $q->where('no_en-tenant_id', $tenantId),
+                    static fn($q) => $q->where('no_en-tenant_id', $tenantId),
                 )
                 ->where('no_en-ac_de_pl_id-fk', $activationId)
                 ->whereNotNull('no_en-per_id-fk')
@@ -5616,7 +5534,7 @@ class ActivationController extends Controller
                 if ($perId === '') {
                     continue;
                 }
-                if (! array_key_exists($perId, $lastNotificationByPerson)) {
+                if (!array_key_exists($perId, $lastNotificationByPerson)) {
                     $lastNotificationByPerson[$perId] = [
                         'id' => trim((string) ($row->{'no_en-id'} ?? '')),
                         'ts' => trim((string) ($row->{'no_en-ts'} ?? '')),
@@ -5625,16 +5543,16 @@ class ActivationController extends Controller
             }
         }
 
-        if (! empty($lastNotificationByPerson) && Schema::hasTable('notificacion_confirmacion_trs')) {
+        if (!empty($lastNotificationByPerson) && Schema::hasTable('notificacion_confirmacion_trs')) {
             $lastIds = array_values(array_filter(array_map(
-                static fn ($row) => is_array($row) ? trim((string) ($row['id'] ?? '')) : '',
+                static fn($row) => is_array($row) ? trim((string) ($row['id'] ?? '')) : '',
                 $lastNotificationByPerson
-            ), static fn ($v) => $v !== ''));
-            if (! empty($lastIds)) {
+            ), static fn($v) => $v !== ''));
+            if (!empty($lastIds)) {
                 $rowsConfirm = DB::table('notificacion_confirmacion_trs')
                     ->when(
                         Schema::hasColumn('notificacion_confirmacion_trs', 'no_co-tenant_id'),
-                        static fn ($q) => $q->where('no_co-tenant_id', $tenantId),
+                        static fn($q) => $q->where('no_co-tenant_id', $tenantId),
                     )
                     ->whereIn('no_co-no_en_id-fk', $lastIds)
                     ->orderBy('no_co-ts', 'DESC')
@@ -5658,11 +5576,11 @@ class ActivationController extends Controller
                 ->join('asignacion_en_funciones_trs as asg', 'asg.as_en_fu-id', '=', 'ej.ej_ac-as_en_fu_id-fk')
                 ->when(
                     Schema::hasColumn('ejecucion_accion_trs', 'ej_ac-tenant_id'),
-                    static fn ($q) => $q->where('ej.ej_ac-tenant_id', $tenantId),
+                    static fn($q) => $q->where('ej.ej_ac-tenant_id', $tenantId),
                 )
                 ->when(
                     Schema::hasColumn('asignacion_en_funciones_trs', 'as_en_fu-tenant_id'),
-                    static fn ($q) => $q->where('asg.as_en_fu-tenant_id', $tenantId),
+                    static fn($q) => $q->where('asg.as_en_fu-tenant_id', $tenantId),
                 )
                 ->where('ej.ej_ac-ac_de_pl_id-fk', $activationId)
                 ->whereRaw("UPPER(COALESCE(`ej`.`ej_ac-estado`, '')) IN ('CONFIRMADO','CONFIRMADA')")
@@ -5681,11 +5599,11 @@ class ActivationController extends Controller
                 ->leftJoin('persona_mst as p', 'p.per-id', '=', 'a.as_en_fu-per_id-fk')
                 ->when(
                     Schema::hasColumn('asignacion_en_funciones_trs', 'as_en_fu-tenant_id'),
-                    static fn ($q) => $q->where('a.as_en_fu-tenant_id', $tenantId),
+                    static fn($q) => $q->where('a.as_en_fu-tenant_id', $tenantId),
                 )
                 ->when(
                     Schema::hasColumn('persona_mst', 'per-tenant_id'),
-                    static fn ($q) => $q->where('p.per-tenant_id', $tenantId),
+                    static fn($q) => $q->where('p.per-tenant_id', $tenantId),
                 )
                 ->where('a.as_en_fu-ac_de_pl_id-fk', $activationId)
                 ->whereRaw("COALESCE(`a`.`as_en_fu-ts_fin`, '') = ''")
@@ -5748,11 +5666,11 @@ class ActivationController extends Controller
             }
             $safeKey = Str::slug($gid);
             $entry = $assignByGrupo[strtoupper($gid)] ?? ['TITULAR' => [], 'SUPLENTE' => []];
-            usort($entry['TITULAR'], static fn ($a, $b) => strcmp((string) ($b['ts_ini'] ?? ''), (string) ($a['ts_ini'] ?? '')));
-            usort($entry['SUPLENTE'], static fn ($a, $b) => strcmp((string) ($b['ts_ini'] ?? ''), (string) ($a['ts_ini'] ?? '')));
+            usort($entry['TITULAR'], static fn($a, $b) => strcmp((string) ($b['ts_ini'] ?? ''), (string) ($a['ts_ini'] ?? '')));
+            usort($entry['SUPLENTE'], static fn($a, $b) => strcmp((string) ($b['ts_ini'] ?? ''), (string) ($a['ts_ini'] ?? '')));
             $titular = $entry['TITULAR'][0]['persona'] ?? null;
             $suplentes = array_values(array_map(
-                static fn ($row) => $row['persona'],
+                static fn($row) => $row['persona'],
                 array_slice($entry['SUPLENTE'], 0, 2),
             ));
 
@@ -5764,7 +5682,7 @@ class ActivationController extends Controller
             $pendingForGrupo = max(0, $totalForGrupo - $done);
             $percent = $totalForGrupo > 0 ? (int) min(100, round(($done / $totalForGrupo) * 100)) : 0;
             $hasAsignacion = $titular !== null || count($suplentes) > 0;
-            $color = ! $hasAsignacion ? 'ROJO' : ($totalAcciones > 0 && $done >= $totalAcciones ? 'VERDE' : 'AMARILLO');
+            $color = !$hasAsignacion ? 'ROJO' : ($totalAcciones > 0 && $done >= $totalAcciones ? 'VERDE' : 'AMARILLO');
 
             $rows[] = [
                 'grupo_id' => $gid,
@@ -5779,10 +5697,10 @@ class ActivationController extends Controller
             ];
         }
 
-        $overallDone = array_reduce($rows, static fn ($acc, $r) => $acc + (int) ($r['done'] ?? 0), 0);
+        $overallDone = array_reduce($rows, static fn($acc, $r) => $acc + (int) ($r['done'] ?? 0), 0);
         $overallTotal = array_reduce(
             $rows,
-            static fn ($acc, $r) => $acc + (int) ($r['total'] ?? 0),
+            static fn($acc, $r) => $acc + (int) ($r['total'] ?? 0),
             0
         );
         if ($overallTotal <= 0) {
@@ -5820,19 +5738,19 @@ class ActivationController extends Controller
             return response()->json(['message' => 'Invalid activation id.'], 422);
         }
 
-        if (! Schema::hasTable('activacion_del_plan_trs')) {
+        if (!Schema::hasTable('activacion_del_plan_trs')) {
             return response()->json(['message' => 'Missing activacion_del_plan_trs table.'], 422);
         }
 
         $activationExists = DB::table('activacion_del_plan_trs')
             ->when(
                 Schema::hasColumn('activacion_del_plan_trs', 'ac_de_pl-tenant_id'),
-                static fn ($q) => $q->where('ac_de_pl-tenant_id', $tenantId),
+                static fn($q) => $q->where('ac_de_pl-tenant_id', $tenantId),
             )
             ->where('ac_de_pl-id', $activationId)
             ->exists();
 
-        if (! $activationExists) {
+        if (!$activationExists) {
             return response()->json(['message' => 'Activation not found.'], 404);
         }
 
@@ -5841,7 +5759,7 @@ class ActivationController extends Controller
             'expires_at' => ['nullable', 'date'],
         ]);
 
-        if (! Schema::hasTable('control_panel_access_trs')) {
+        if (!Schema::hasTable('control_panel_access_trs')) {
             return response()->json(['message' => 'Missing control_panel_access_trs table.'], 422);
         }
 
@@ -5850,7 +5768,7 @@ class ActivationController extends Controller
             ->where('id', (int) $data['user_id'])
             ->first();
 
-        if (! $targetUser) {
+        if (!$targetUser) {
             return response()->json(['message' => 'User not found.'], 404);
         }
 
@@ -5876,7 +5794,7 @@ class ActivationController extends Controller
         );
 
         $tenantLang = strtolower(trim((string) (Tenant::query()->where('tenant_id', $tenantId)->value('default_language') ?? 'es')));
-        if (! in_array($tenantLang, ['es', 'ca', 'en'], true)) {
+        if (!in_array($tenantLang, ['es', 'ca', 'en'], true)) {
             $tenantLang = 'es';
         }
         $subjectByLang = [
@@ -5887,7 +5805,7 @@ class ActivationController extends Controller
         $activationRow = DB::table('activacion_del_plan_trs')
             ->when(
                 Schema::hasColumn('activacion_del_plan_trs', 'ac_de_pl-tenant_id'),
-                static fn ($q) => $q->where('ac_de_pl-tenant_id', $tenantId),
+                static fn($q) => $q->where('ac_de_pl-tenant_id', $tenantId),
             )
             ->where('ac_de_pl-id', $activationId)
             ->first(['ac_de_pl-rie_id-fk', 'ac_de_pl-ni_al_id-fk-inicial']);
@@ -5899,7 +5817,7 @@ class ActivationController extends Controller
             $risk = DB::table('riesgo_cat')
                 ->when(
                     Schema::hasColumn('riesgo_cat', 'rie-tenant_id'),
-                    static fn ($q) => $q->where('rie-tenant_id', $tenantId),
+                    static fn($q) => $q->where('rie-tenant_id', $tenantId),
                 )
                 ->where('rie-id', $riskId)
                 ->first(['rie-nombre']);
@@ -5909,7 +5827,7 @@ class ActivationController extends Controller
             $level = DB::table('nivel_alerta_cat')
                 ->when(
                     Schema::hasColumn('nivel_alerta_cat', 'ni_al-tenant_id'),
-                    static fn ($q) => $q->where('ni_al-tenant_id', $tenantId),
+                    static fn($q) => $q->where('ni_al-tenant_id', $tenantId),
                 )
                 ->where('ni_al-id', $levelId)
                 ->first(['ni_al-nombre']);
@@ -5967,7 +5885,7 @@ class ActivationController extends Controller
         }
 
         $user = $request->user();
-        if (! $user) {
+        if (!$user) {
             return response()->json(['message' => 'Unauthorized.'], 401);
         }
 
@@ -6011,7 +5929,7 @@ class ActivationController extends Controller
             'files.*' => ['file', 'max:51200'],
         ]);
 
-        if (! Schema::hasTable('activacion_del_plan_trs')) {
+        if (!Schema::hasTable('activacion_del_plan_trs')) {
             return response()->json(['message' => 'Missing activacion_del_plan_trs table.'], 422);
         }
 
@@ -6020,7 +5938,7 @@ class ActivationController extends Controller
             ->where('ac_de_pl-tenant_id', $tenantId)
             ->exists();
 
-        if (! $exists) {
+        if (!$exists) {
             return response()->json(['message' => 'Activation not found.'], 404);
         }
 
@@ -6028,15 +5946,15 @@ class ActivationController extends Controller
         $documents = [];
 
         foreach ($files as $file) {
-            if (! $file instanceof UploadedFile) {
+            if (!$file instanceof UploadedFile) {
                 continue;
             }
 
             $original = $file->getClientOriginalName() ?: 'documento';
             $safe = preg_replace('/[^A-Za-z0-9._-]+/', '_', $original) ?: 'documento';
-            $id = 'DOC-'.Str::uuid()->toString();
-            $dir = 'activaciones/'.$tenantId.'/'.$activationId;
-            $filename = $id.'-'.$safe;
+            $id = 'DOC-' . Str::uuid()->toString();
+            $dir = 'activaciones/' . $tenantId . '/' . $activationId;
+            $filename = $id . '-' . $safe;
             $path = Storage::disk('local')->putFileAs($dir, $file, $filename);
 
             $documents[] = [
@@ -6046,7 +5964,7 @@ class ActivationController extends Controller
             ];
         }
 
-        if (! empty($documents)) {
+        if (!empty($documents)) {
             $this->auditLogger->logFromRequest($request, [
                 'event_type' => 'document_uploaded',
                 'module' => 'documents',
@@ -6082,36 +6000,36 @@ class ActivationController extends Controller
         }
 
         $dir = $tipoEmergenciaId !== ''
-            ? 'repositorio_riesgo_plan/'.$tenantId.'/'.$tipoEmergenciaId.'/'.$riesgoId
-            : 'repositorio_riesgo/'.$tenantId.'/'.$riesgoId;
+            ? 'repositorio_riesgo_plan/' . $tenantId . '/' . $tipoEmergenciaId . '/' . $riesgoId
+            : 'repositorio_riesgo/' . $tenantId . '/' . $riesgoId;
 
-        if (! Storage::disk('local')->exists($dir)) {
+        if (!Storage::disk('local')->exists($dir)) {
             Storage::disk('local')->makeDirectory($dir);
         }
 
         $files = array_values(array_filter(
             Storage::disk('local')->files($dir),
-            static fn ($p) => is_string($p) && trim($p) !== '' && ! str_ends_with($p, '/')
+            static fn($p) => is_string($p) && trim($p) !== '' && !str_ends_with($p, '/')
         ));
 
         if (empty($files)) {
             $seed = [
                 [
                     'name' => '01-descripcion-del-riesgo.txt',
-                    'content' => ($tipoEmergenciaId !== '' ? "Tipo emergencia: {$tipoEmergenciaId}\n" : '')."Riesgo: {$riesgoId}\n\nDocumento de prueba.\n",
+                    'content' => ($tipoEmergenciaId !== '' ? "Tipo emergencia: {$tipoEmergenciaId}\n" : '') . "Riesgo: {$riesgoId}\n\nDocumento de prueba.\n",
                 ],
                 [
                     'name' => '02-protocolo-de-actuacion.txt',
-                    'content' => ($tipoEmergenciaId !== '' ? "Tipo emergencia: {$tipoEmergenciaId}\n" : '')."Riesgo: {$riesgoId}\n\nProtocolo de actuación (prueba).\n",
+                    'content' => ($tipoEmergenciaId !== '' ? "Tipo emergencia: {$tipoEmergenciaId}\n" : '') . "Riesgo: {$riesgoId}\n\nProtocolo de actuación (prueba).\n",
                 ],
                 [
                     'name' => '03-checklist-operativo.txt',
-                    'content' => ($tipoEmergenciaId !== '' ? "Tipo emergencia: {$tipoEmergenciaId}\n" : '')."Riesgo: {$riesgoId}\n\nChecklist operativo (prueba).\n",
+                    'content' => ($tipoEmergenciaId !== '' ? "Tipo emergencia: {$tipoEmergenciaId}\n" : '') . "Riesgo: {$riesgoId}\n\nChecklist operativo (prueba).\n",
                 ],
             ];
 
             foreach ($seed as $doc) {
-                Storage::disk('local')->put($dir.'/'.$doc['name'], $doc['content']);
+                Storage::disk('local')->put($dir . '/' . $doc['name'], $doc['content']);
             }
 
             $files = Storage::disk('local')->files($dir);
@@ -6142,7 +6060,7 @@ class ActivationController extends Controller
             ];
         }
 
-        usort($docs, static fn ($a, $b) => strcmp((string) ($a['name'] ?? ''), (string) ($b['name'] ?? '')));
+        usort($docs, static fn($a, $b) => strcmp((string) ($a['name'] ?? ''), (string) ($b['name'] ?? '')));
 
         return response()->json([
             'riesgo_id' => $riesgoId,
@@ -6178,9 +6096,9 @@ class ActivationController extends Controller
         $url = trim((string) ($validated['url'] ?? ''));
 
         $dir = $tipoEmergenciaId !== ''
-            ? 'repositorio_riesgo_plan/'.$tenantId.'/'.$tipoEmergenciaId.'/'.$riesgoId
-            : 'repositorio_riesgo/'.$tenantId.'/'.$riesgoId;
-        if (! Storage::disk('local')->exists($dir)) {
+            ? 'repositorio_riesgo_plan/' . $tenantId . '/' . $tipoEmergenciaId . '/' . $riesgoId
+            : 'repositorio_riesgo/' . $tenantId . '/' . $riesgoId;
+        if (!Storage::disk('local')->exists($dir)) {
             Storage::disk('local')->makeDirectory($dir);
         }
 
@@ -6192,9 +6110,9 @@ class ActivationController extends Controller
 
         $ts = now()->format('YmdHis');
         $id = Str::uuid()->toString();
-        $filename = 'link-'.$ts.'-'.$safeTitle.'-'.substr($id, 0, 8).'.txt';
+        $filename = 'link-' . $ts . '-' . $safeTitle . '-' . substr($id, 0, 8) . '.txt';
 
-        Storage::disk('local')->put($dir.'/'.$filename, $url."\n");
+        Storage::disk('local')->put($dir . '/' . $filename, $url . "\n");
 
         return response()->json([
             'message' => 'OK',
@@ -6227,14 +6145,14 @@ class ActivationController extends Controller
             return response()->json(['message' => 'Invalid filename.'], 422);
         }
 
-        if (! str_starts_with($filename, 'link-')) {
+        if (!str_starts_with($filename, 'link-')) {
             return response()->json(['message' => 'Only link files can be deleted.'], 422);
         }
 
         $path = $tipoEmergenciaId !== ''
-            ? 'repositorio_riesgo_plan/'.$tenantId.'/'.$tipoEmergenciaId.'/'.$riesgoId.'/'.$filename
-            : 'repositorio_riesgo/'.$tenantId.'/'.$riesgoId.'/'.$filename;
-        if (! Storage::disk('local')->exists($path)) {
+            ? 'repositorio_riesgo_plan/' . $tenantId . '/' . $tipoEmergenciaId . '/' . $riesgoId . '/' . $filename
+            : 'repositorio_riesgo/' . $tenantId . '/' . $riesgoId . '/' . $filename;
+        if (!Storage::disk('local')->exists($path)) {
             return response()->json(['message' => 'File not found.'], 404);
         }
 
@@ -6271,10 +6189,10 @@ class ActivationController extends Controller
         }
 
         $path = $tipoEmergenciaId !== ''
-            ? 'repositorio_riesgo_plan/'.$tenantId.'/'.$tipoEmergenciaId.'/'.$riesgoId.'/'.$filename
-            : 'repositorio_riesgo/'.$tenantId.'/'.$riesgoId.'/'.$filename;
+            ? 'repositorio_riesgo_plan/' . $tenantId . '/' . $tipoEmergenciaId . '/' . $riesgoId . '/' . $filename
+            : 'repositorio_riesgo/' . $tenantId . '/' . $riesgoId . '/' . $filename;
 
-        if (! Storage::disk('local')->exists($path)) {
+        if (!Storage::disk('local')->exists($path)) {
             return response()->json(['message' => 'File not found.'], 404);
         }
 
@@ -6312,7 +6230,7 @@ class ActivationController extends Controller
             }
         }
         $selectedLeaderGroupId = null;
-        if ($hasMultipleGroups && ! empty($leaderCandidates)) {
+        if ($hasMultipleGroups && !empty($leaderCandidates)) {
             usort($leaderCandidates, static function ($a, $b) {
                 $ao = (int) ($a['order'] ?? 999);
                 $bo = (int) ($b['order'] ?? 999);
@@ -6384,7 +6302,7 @@ class ActivationController extends Controller
             if ($tipo !== 'TITULAR' && $tipo !== 'LIDER') {
                 $tipo = 'SUPLENTE';
             }
-            $key = $perId.'|'.$grOp.'|'.$tipo;
+            $key = $perId . '|' . $grOp . '|' . $tipo;
             $unique[$key] = [
                 'per_id' => $perId,
                 'gr_op_id' => $grOp !== '' ? $grOp : null,
@@ -6398,22 +6316,22 @@ class ActivationController extends Controller
     private function getActionSets(string $tenantId, string $riesgoId, string $nivelAlertaId): array
     {
         $targetLevels = [$nivelAlertaId];
-        
+
         // Find siblings
         if (Schema::hasTable('nivel_alerta_cat')) {
             $currentLevel = DB::table('nivel_alerta_cat')
-                 ->when(Schema::hasColumn('nivel_alerta_cat', 'ni_al-tenant_id'), fn($q) => $q->where(function($qq) use ($tenantId) {
-                     $qq->whereNull('ni_al-tenant_id')->orWhere('ni_al-tenant_id', $tenantId);
-                 }))
+                ->when(Schema::hasColumn('nivel_alerta_cat', 'ni_al-tenant_id'), fn($q) => $q->where(function ($qq) use ($tenantId) {
+                    $qq->whereNull('ni_al-tenant_id')->orWhere('ni_al-tenant_id', $tenantId);
+                }))
                 ->where('ni_al-id', $nivelAlertaId)
                 ->first();
-                
+
             $emId = $currentLevel?->{'ni_al-ni_em_id-fk'} ?? null;
             if ($emId) {
                 $siblings = DB::table('nivel_alerta_cat')
-                    ->when(Schema::hasColumn('nivel_alerta_cat', 'ni_al-tenant_id'), fn($q) => $q->where(function($qq) use ($tenantId) {
-                         $qq->whereNull('ni_al-tenant_id')->orWhere('ni_al-tenant_id', $tenantId);
-                     }))
+                    ->when(Schema::hasColumn('nivel_alerta_cat', 'ni_al-tenant_id'), fn($q) => $q->where(function ($qq) use ($tenantId) {
+                        $qq->whereNull('ni_al-tenant_id')->orWhere('ni_al-tenant_id', $tenantId);
+                    }))
                     ->where('ni_al-ni_em_id-fk', $emId)
                     ->where('ni_al-id', '<>', $nivelAlertaId)
                     ->pluck('ni_al-id')
@@ -6422,7 +6340,7 @@ class ActivationController extends Controller
                 $targetLevels = array_merge($targetLevels, $siblings);
             }
         }
-        
+
         $actionSetIds = [];
 
         // 1. Riesgo Config
@@ -6434,7 +6352,7 @@ class ActivationController extends Controller
                 ->whereRaw("UPPER(COALESCE(`ri_ni_ac_se-activo`, 'SI')) <> 'NO'")
                 ->orderByRaw("CAST(COALESCE(`ri_ni_ac_se-prioridad`, '999') AS UNSIGNED) ASC")
                 ->get();
-            
+
             foreach ($targetLevels as $lvl) {
                 $foundForLevel = false;
                 foreach ($mapping as $row) {
@@ -6446,16 +6364,17 @@ class ActivationController extends Controller
                         }
                     }
                 }
-                if ($foundForLevel) return $actionSetIds; // Found match for highest priority level
+                if ($foundForLevel)
+                    return $actionSetIds; // Found match for highest priority level
             }
         }
 
         // 2. Tipo Riesgo Config
         if (Schema::hasTable('riesgo_cat') && Schema::hasTable('tipo_riesgo_nivel_accion_set_cfg')) {
-             $riesgo = DB::table('riesgo_cat')
+            $riesgo = DB::table('riesgo_cat')
                 ->when(
                     Schema::hasColumn('riesgo_cat', 'rie-tenant_id'),
-                    static fn ($q) => $q->where('rie-tenant_id', $tenantId),
+                    static fn($q) => $q->where('rie-tenant_id', $tenantId),
                 )
                 ->where('rie-id', $riesgoId)
                 ->first();
@@ -6465,7 +6384,7 @@ class ActivationController extends Controller
                 $mappingTipo = DB::table('tipo_riesgo_nivel_accion_set_cfg')
                     ->when(
                         Schema::hasColumn('tipo_riesgo_nivel_accion_set_cfg', 'ti_ri_ni_ac_se-tenant_id'),
-                        static fn ($q) => $q->where('ti_ri_ni_ac_se-tenant_id', $tenantId),
+                        static fn($q) => $q->where('ti_ri_ni_ac_se-tenant_id', $tenantId),
                     )
                     ->where('ti_ri_ni_ac_se-ti_ri_id-fk', $tipoRiesgoId)
                     ->whereIn('ti_ri_ni_ac_se-ni_al_id-fk', $targetLevels)
@@ -6484,11 +6403,12 @@ class ActivationController extends Controller
                             }
                         }
                     }
-                    if ($foundForLevel) return $actionSetIds;
+                    if ($foundForLevel)
+                        return $actionSetIds;
                 }
             }
         }
-        
+
         return $actionSetIds;
     }
 
@@ -6509,7 +6429,7 @@ class ActivationController extends Controller
 
     private function tenantNow(string $tenantId): Carbon
     {
-        if (! isset($this->tenantTimezoneCache[$tenantId])) {
+        if (!isset($this->tenantTimezoneCache[$tenantId])) {
             $timezone = 'Europe/Madrid';
             if (Schema::hasTable('tenants')) {
                 $tenant = DB::table('tenants')->where('tenant_id', $tenantId)->first();
