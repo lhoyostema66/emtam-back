@@ -375,10 +375,22 @@ Artisan::command('activaciones:auto-delegar {--tenant=} {--dry-run}', function (
                 $rgKey = $roleId . '|' . $gid;
                 $titularRows = $titularesByRoleGroup[$rgKey] ?? [];
                 $titularId = trim((string) ($titularRows[0]['per_id'] ?? ''));
+
+                $currentAsignId = trim((string) ($ej->{'ej_ac-as_en_fu_id-fk'} ?? ''));
+                $currentAsign = $currentAsignId !== '' ? ($assignmentById[$currentAsignId] ?? null) : null;
+                $currentPerId = trim((string) ($currentAsign?->{'as_en_fu-per_id-fk'} ?? ''));
+
+                $titularConfirmado = ($confirmedByPerson[$titularId] ?? false) === true ? 'SI' : 'NO';
+                $asignadoConfirmado = ($confirmedByPerson[$currentPerId] ?? false) === true ? 'SI' : 'NO';
+
+                Log::debug("  - Verificando Titular $titularId (Confirmado: $titularConfirmado) | Asignado Actual $currentPerId (Confirmado: $asignadoConfirmado)");
+
                 if ($titularId === '') {
                     continue;
                 }
-                if (($confirmedByPerson[$titularId] ?? false) === true) {
+
+                if ($titularConfirmado === 'SI' || $asignadoConfirmado === 'SI') {
+                    Log::debug("    * Saltando Rol $roleId: Titular o Asignado ya confirmaron.");
                     continue;
                 }
 
