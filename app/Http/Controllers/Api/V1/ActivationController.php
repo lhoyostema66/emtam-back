@@ -579,6 +579,7 @@ class ActivationController extends Controller
             $channels = $this->resolveNotificationChannels($tenant);
             $emailNotificationsEnabled = (bool) ($channels['email_enabled'] ?? false);
             $whatsappNotificationsEnabled = (bool) ($channels['whatsapp_enabled'] ?? false);
+            $includeCredentials = (bool) ($tenant?->notifications_include_credentials ?? false);
 
             $byPerson = [];
             $actionsByRole = [];
@@ -986,6 +987,7 @@ class ActivationController extends Controller
 
             $riesgoLabel = '';
             $nivelLabel = '';
+            $nivelCod = '';
             $activationMessageReal = '';
             $activationMessageSimul = '';
             if (Schema::hasTable('activacion_del_plan_trs')) {
@@ -1020,9 +1022,38 @@ class ActivationController extends Controller
                         ->where('ni_al-id', $nivelId)
                         ->first();
                     $nivelLabel = trim((string) ($nivel?->{'ni_al-nombre'} ?? '')) ?: $nivelId;
+                    $nivelCod = strtoupper(trim((string) ($nivel?->{'ni_al-cod'} ?? '')));
                 }
             }
+            $nivelUpper = strtoupper(trim($nivelLabel));
+            $isNormalidad = ($nivelUpper !== '' && str_contains($nivelUpper, 'NORMALIDAD'))
+                || in_array($nivelCod, ['NORMALIDAD', 'NORMAL', 'NOR'], true);
+            if ($isNormalidad) {
+                return response()->json([
+                    'message' => 'Notificaciones omitidas para nivel Normalidad.',
+                    'mode' => $mode,
+                    'sent' => 0,
+                    'files_written' => 0,
+                    'recipients' => 0,
+                    'recipient_emails' => [],
+                    'sent_recipient_emails' => [],
+                    'failed_recipients' => [],
+                    'whatsapp_sent' => 0,
+                    'whatsapp_files_written' => 0,
+                    'whatsapp_recipients' => 0,
+                    'sms_sent' => 0,
+                    'sms_files_written' => 0,
+                    'sms_recipients' => 0,
+                    'warnings' => ['No se envían notificaciones en Normalidad.'],
+                    'debug' => [
+                        'skipped_normalidad' => true,
+                        'nivel_cod' => $nivelCod,
+                        'nivel_nombre' => $nivelLabel,
+                    ],
+                ]);
+            }
             $planName = implode(' · ', array_filter([$riesgoLabel, $nivelLabel], static fn($v) => trim((string) $v) !== '')) ?: $activationId;
+            $activationDateTimeLabel = $this->resolveActivationDateTimeLabel($tenantId, $activationId);
             $normalizeMessage = static function ($value): string {
                 if (is_string($value)) {
                     $decoded = json_decode($value, true);
@@ -1176,6 +1207,12 @@ class ActivationController extends Controller
                     $emailError = '';
 
                     $body = $emailBody;
+                    if ($includeCredentials) {
+                        $body = $this->appendCredentialsText($body, $tenant, $to !== '' ? $to : null) . "\n";
+                    }
+                    $credentialsHtml = $includeCredentials
+                        ? $this->buildCredentialsHtml($tenant, $to !== '' ? $to : null)
+                        : '';
                     $bodyHtml = '<div style="font-family: Arial, sans-serif; font-size: 14px; color: #111; line-height: 1.6;">'
                         . '<div style="font-size: 16px; font-weight: 700; margin-bottom: 12px;">' . $escapeHtml($subject) . '</div>'
                         . ($notificationMessage !== ''
@@ -1183,9 +1220,10 @@ class ActivationController extends Controller
                             : '')
                         . '<div style="margin: 12px 0; padding: 10px 12px; background: #f6f6f6; border: 1px solid #e5e5e5; border-radius: 8px;">'
                         . '<div><strong>Plan:</strong> ' . $escapeHtml($planName) . '</div>'
-                        . '<div><strong>Activación:</strong> ' . $escapeHtml($activationId) . '</div>'
+                        . '<div><strong>Fecha/hora de activación:</strong> ' . $escapeHtml($activationDateTimeLabel) . '</div>'
                         . '<div><strong>Rol:</strong> ' . $escapeHtml($rolesLabel) . '</div>'
                         . '</div>'
+                        . $credentialsHtml
                         . '<div style="font-size: 12px; color: #666;">' . $escapeHtml($modoLabel) . '</div>'
                         . '</div>';
 
@@ -1329,6 +1367,12 @@ class ActivationController extends Controller
                 $subject = $emailSubject;
                 foreach ($testEmails as $testEmail) {
                     $body = $emailBody;
+                    if ($includeCredentials) {
+                        $body = $this->appendCredentialsText($body, $tenant, $testEmail) . "\n";
+                    }
+                    $credentialsHtml = $includeCredentials
+                        ? $this->buildCredentialsHtml($tenant, $testEmail)
+                        : '';
                     $bodyHtml = '<div style="font-family: Arial, sans-serif; font-size: 14px; color: #111; line-height: 1.6;">'
                         . '<div style="font-size: 16px; font-weight: 700; margin-bottom: 12px;">' . $escapeHtml($subject) . '</div>'
                         . ($notificationMessage !== ''
@@ -1336,8 +1380,9 @@ class ActivationController extends Controller
                             : '')
                         . '<div style="margin: 12px 0; padding: 10px 12px; background: #f6f6f6; border: 1px solid #e5e5e5; border-radius: 8px;">'
                         . '<div><strong>Plan:</strong> ' . $escapeHtml($planName) . '</div>'
-                        . '<div><strong>Activación:</strong> ' . $escapeHtml($activationId) . '</div>'
+                        . '<div><strong>Fecha/hora de activación:</strong> ' . $escapeHtml($activationDateTimeLabel) . '</div>'
                         . '</div>'
+                        . $credentialsHtml
                         . '<div style="font-size: 12px; color: #666;">' . $escapeHtml($modoLabel) . '</div>'
                         . '</div>';
 
@@ -1464,6 +1509,7 @@ class ActivationController extends Controller
                         'per_id' => (string) ($p['per_id'] ?? ''),
                         'nombre' => (string) ($p['nombre'] ?? ''),
                         'phone' => $phone,
+                        'email' => strtolower(trim((string) ($p['email'] ?? ''))),
                     ];
                 }
             } else {
@@ -1476,14 +1522,22 @@ class ActivationController extends Controller
                         'per_id' => null,
                         'nombre' => 'TEST',
                         'phone' => $normalized,
+                        'email' => null,
                     ];
                 }
             }
-            $whatsappMessage = trim($emailBody);
-            if ($whatsappMessage !== '' && !empty($whatsappTargets)) {
+            if (!empty($whatsappTargets)) {
                 foreach ($whatsappTargets as $target) {
                     $phone = (string) ($target['phone'] ?? '');
                     if ($phone === '') {
+                        continue;
+                    }
+                    $targetEmail = strtolower(trim((string) ($target['email'] ?? '')));
+                    $whatsappMessage = trim($emailBody);
+                    if ($includeCredentials) {
+                        $whatsappMessage = trim($this->appendCredentialsText($whatsappMessage, $tenant, $targetEmail !== '' ? $targetEmail : null));
+                    }
+                    if ($whatsappMessage === '') {
                         continue;
                     }
                     if ($mode === 'file') {
@@ -1525,6 +1579,7 @@ class ActivationController extends Controller
                         'per_id' => (string) ($p['per_id'] ?? ''),
                         'nombre' => (string) ($p['nombre'] ?? ''),
                         'phone' => $phone,
+                        'email' => strtolower(trim((string) ($p['email'] ?? ''))),
                     ];
                 }
             } else {
@@ -1537,14 +1592,22 @@ class ActivationController extends Controller
                         'per_id' => null,
                         'nombre' => 'TEST',
                         'phone' => $normalized,
+                        'email' => null,
                     ];
                 }
             }
-            $smsMessage = trim($emailBody);
-            if ($smsMessage !== '' && !empty($smsTargets)) {
+            if (!empty($smsTargets)) {
                 foreach ($smsTargets as $target) {
                     $phone = (string) ($target['phone'] ?? '');
                     if ($phone === '') {
+                        continue;
+                    }
+                    $targetEmail = strtolower(trim((string) ($target['email'] ?? '')));
+                    $smsMessage = trim($emailBody);
+                    if ($includeCredentials) {
+                        $smsMessage = trim($this->appendCredentialsText($smsMessage, $tenant, $targetEmail !== '' ? $targetEmail : null));
+                    }
+                    if ($smsMessage === '') {
                         continue;
                     }
                     if ($mode === 'file') {
@@ -1759,6 +1822,7 @@ class ActivationController extends Controller
         $whatsappRecipients = [];
         $smsRecipients = [];
         $smsRecipients = [];
+        $smsRecipients = [];
         if ($productionMode) {
             if (Schema::hasTable('persona_rol_grupo_cfg') && Schema::hasTable('persona_mst')) {
                 $rows = DB::table('persona_rol_grupo_cfg as prg')
@@ -1797,8 +1861,15 @@ class ActivationController extends Controller
                     ])));
                     $phone = $this->normalizeWhatsappNumber((string) ($row->tel_mov ?? ''));
                     if ($phone !== '') {
-                        $whatsappRecipients[$phone] = $recipients[$email];
-                        $smsRecipients[$phone] = $recipients[$email];
+                        $displayName = $recipients[$email];
+                        $whatsappRecipients[$phone] = [
+                            'display' => $displayName,
+                            'email' => $email,
+                        ];
+                        $smsRecipients[$phone] = [
+                            'display' => $displayName,
+                            'email' => $email,
+                        ];
                     }
                 }
             }
@@ -1823,10 +1894,16 @@ class ActivationController extends Controller
                 }
             }
             foreach ($this->parseWhatsappNumbers($tenant?->test_notification_whatsapp_numbers) as $phone) {
-                $whatsappRecipients[$phone] = $phone;
+                $whatsappRecipients[$phone] = [
+                    'display' => $phone,
+                    'email' => null,
+                ];
             }
             foreach ($this->parseSmsNumbers($tenant?->test_notification_sms_numbers) as $phone) {
-                $smsRecipients[$phone] = $phone;
+                $smsRecipients[$phone] = [
+                    'display' => $phone,
+                    'email' => null,
+                ];
             }
         }
 
@@ -2095,6 +2172,7 @@ class ActivationController extends Controller
 
         $recipients = [];
         $whatsappRecipients = [];
+        $smsRecipients = [];
         $recipientSource = 'none';
         if ($productionMode) {
             if ($isAviso) {
@@ -2120,14 +2198,30 @@ class ActivationController extends Controller
                     if ($email === '') {
                         $phone = $this->normalizeWhatsappNumber((string) ($row->phone ?? ''));
                         if ($phone !== '') {
-                            $whatsappRecipients[$phone] = trim((string) ($row->name ?? '')) ?: $phone;
+                            $display = trim((string) ($row->name ?? '')) ?: $phone;
+                            $whatsappRecipients[$phone] = [
+                                'display' => $display,
+                                'email' => null,
+                            ];
+                            $smsRecipients[$phone] = [
+                                'display' => $display,
+                                'email' => null,
+                            ];
                         }
                         continue;
                     }
                     $recipients[$email] = trim((string) ($row->name ?? '')) ?: $email;
                     $phone = $this->normalizeWhatsappNumber((string) ($row->phone ?? ''));
                     if ($phone !== '') {
-                        $whatsappRecipients[$phone] = $recipients[$email];
+                        $display = $recipients[$email];
+                        $whatsappRecipients[$phone] = [
+                            'display' => $display,
+                            'email' => $email,
+                        ];
+                        $smsRecipients[$phone] = [
+                            'display' => $display,
+                            'email' => $email,
+                        ];
                     }
                 }
             } elseif (Schema::hasTable('persona_rol_grupo_cfg') && Schema::hasTable('persona_mst')) {
@@ -2168,8 +2262,15 @@ class ActivationController extends Controller
                     ])));
                     $phone = $this->normalizeWhatsappNumber((string) ($row->tel_mov ?? ''));
                     if ($phone !== '') {
-                        $whatsappRecipients[$phone] = $recipients[$email];
-                        $smsRecipients[$phone] = $recipients[$email];
+                        $displayName = $recipients[$email];
+                        $whatsappRecipients[$phone] = [
+                            'display' => $displayName,
+                            'email' => $email,
+                        ];
+                        $smsRecipients[$phone] = [
+                            'display' => $displayName,
+                            'email' => $email,
+                        ];
                     }
                 }
             }
@@ -2252,10 +2353,14 @@ class ActivationController extends Controller
         }
 
         foreach ($recipients as $email => $displayName) {
+            $emailBodyHtml = $bodyHtml;
+            if ($includeCredentials) {
+                $emailBodyHtml .= $this->buildCredentialsHtml($tenant, $email);
+            }
             if ($mode === 'file') {
                 $safe = preg_replace('/[^A-Za-z0-9._-]+/', '_', $email) ?: 'persona';
                 $path = 'notifications_outbox/' . $tenantId . '/summary/' . $activationId . '/' . $ts . '-' . $safe . '.html';
-                Storage::disk('local')->put($path, $bodyHtml);
+                Storage::disk('local')->put($path, $emailBodyHtml);
                 $filesWritten++;
                 continue;
             }
@@ -2263,13 +2368,20 @@ class ActivationController extends Controller
                 continue;
             }
 
-            Mail::html($bodyHtml, static function ($m) use ($email, $subject) {
+            Mail::html($emailBodyHtml, static function ($m) use ($email, $subject) {
                 $m->to($email)->subject($subject);
             });
             $sent++;
         }
-        $whatsappMessage = trim(strip_tags($bodyHtml));
-        foreach ($whatsappRecipients as $phone => $displayName) {
+        foreach ($whatsappRecipients as $phone => $recipientMeta) {
+            $targetEmail = strtolower(trim((string) (is_array($recipientMeta) ? ($recipientMeta['email'] ?? '') : '')));
+            $whatsappMessage = trim(strip_tags($bodyHtml));
+            if ($includeCredentials) {
+                $whatsappMessage = trim($this->appendCredentialsText($whatsappMessage, $tenant, $targetEmail !== '' ? $targetEmail : null));
+            }
+            if ($whatsappMessage === '') {
+                continue;
+            }
             if ($mode === 'file') {
                 $safe = preg_replace('/[^A-Za-z0-9._-]+/', '_', $phone) ?: 'whatsapp';
                 $path = 'notifications_outbox/' . $tenantId . '/summary/' . $activationId . '/' . $ts . '-wa-' . $safe . '.txt';
@@ -2285,8 +2397,15 @@ class ActivationController extends Controller
                 $whatsappSent++;
             }
         }
-        $smsMessage = $whatsappMessage;
-        foreach ($smsRecipients as $phone => $displayName) {
+        foreach ($smsRecipients as $phone => $recipientMeta) {
+            $targetEmail = strtolower(trim((string) (is_array($recipientMeta) ? ($recipientMeta['email'] ?? '') : '')));
+            $smsMessage = trim(strip_tags($bodyHtml));
+            if ($includeCredentials) {
+                $smsMessage = trim($this->appendCredentialsText($smsMessage, $tenant, $targetEmail !== '' ? $targetEmail : null));
+            }
+            if ($smsMessage === '') {
+                continue;
+            }
             if ($mode === 'file') {
                 $safe = preg_replace('/[^A-Za-z0-9._-]+/', '_', $phone) ?: 'sms';
                 $path = 'notifications_outbox/' . $tenantId . '/summary/' . $activationId . '/' . $ts . '-sms-' . $safe . '.txt';
@@ -2345,6 +2464,31 @@ class ActivationController extends Controller
         $activationId = trim($activationId);
         if ($activationId === '') {
             return response()->json(['message' => 'Invalid activation id.'], 422);
+        }
+
+        $nivelInfo = $this->resolveActivationLevelInfo($tenantId, $activationId);
+        if (($nivelInfo['is_normalidad'] ?? false) === true) {
+            return response()->json([
+                'message' => 'Notificaciones omitidas para nivel Normalidad.',
+                'mode' => $this->resolveNotificationMode(),
+                'sent' => 0,
+                'files_written' => 0,
+                'whatsapp_sent' => 0,
+                'whatsapp_files_written' => 0,
+                'sms_sent' => 0,
+                'sms_files_written' => 0,
+                'recipients' => 0,
+                'whatsapp_recipients' => 0,
+                'sms_recipients' => 0,
+                'recipient_emails' => [],
+                'warnings' => ['No se envían notificaciones en Normalidad.'],
+                'debug' => [
+                    'skipped_normalidad' => true,
+                    'nivel_cod' => (string) ($nivelInfo['nivel_cod'] ?? ''),
+                    'nivel_nombre' => (string) ($nivelInfo['nivel_nombre'] ?? ''),
+                    'nivel_label' => (string) ($nivelInfo['nivel_label'] ?? ''),
+                ],
+            ]);
         }
 
         $validated = $request->validate([
@@ -2413,8 +2557,15 @@ class ActivationController extends Controller
                 $recipients[$personEmail] = $personLabel !== '' ? $personLabel : $personEmail;
             }
             if ($personWhatsapp !== '') {
-                $whatsappRecipients[$personWhatsapp] = $personLabel !== '' ? $personLabel : $personWhatsapp;
-                $smsRecipients[$personWhatsapp] = $personLabel !== '' ? $personLabel : $personWhatsapp;
+                $display = $personLabel !== '' ? $personLabel : $personWhatsapp;
+                $whatsappRecipients[$personWhatsapp] = [
+                    'display' => $display,
+                    'email' => $personEmail !== '' ? $personEmail : null,
+                ];
+                $smsRecipients[$personWhatsapp] = [
+                    'display' => $display,
+                    'email' => $personEmail !== '' ? $personEmail : null,
+                ];
             }
         } else {
             $raw = $tenant?->test_notification_emails;
@@ -2431,18 +2582,25 @@ class ActivationController extends Controller
                 }
             }
             foreach ($this->parseWhatsappNumbers($tenant?->test_notification_whatsapp_numbers) as $phone) {
-                $whatsappRecipients[$phone] = $phone;
+                $whatsappRecipients[$phone] = [
+                    'display' => $phone,
+                    'email' => null,
+                ];
             }
             foreach ($this->parseSmsNumbers($tenant?->test_notification_sms_numbers) as $phone) {
-                $smsRecipients[$phone] = $phone;
+                $smsRecipients[$phone] = [
+                    'display' => $phone,
+                    'email' => null,
+                ];
             }
         }
 
         $subject = 'Cambio de titularidad' . ($groupName !== '' ? ' — ' . $groupName : '');
+        $activationDateTimeLabel = $this->resolveActivationDateTimeLabel($tenantId, $activationId);
         $text = "Se confirma que ahora eres titular del grupo operativo.\n"
             . ($personLabel !== '' ? "Nuevo titular: {$personLabel}\n" : '')
             . ($groupName !== '' ? "Grupo operativo: {$groupName}\n" : '')
-            . "Plan activado: {$activationId}\n"
+            . "Fecha/hora de activación: {$activationDateTimeLabel}\n"
             . 'Accede a la aplicación: https://emta.grupo-tema.com/';
         $bodyHtml = $this->renderNotificationHtml($text);
 
@@ -2454,49 +2612,62 @@ class ActivationController extends Controller
         $smsFilesWritten = 0;
         $ts = now()->format('YmdHis');
         foreach ($recipients as $email => $displayName) {
+            $emailText = $includeCredentials ? $this->appendCredentialsText($text, $tenant, $email) : $text;
+            $emailBodyHtml = $this->renderNotificationHtml($emailText);
+            if ($includeCredentials) {
+                $emailBodyHtml .= $this->buildCredentialsHtml($tenant, $email);
+            }
             if ($mode === 'file') {
                 $safe = preg_replace('/[^A-Za-z0-9._-]+/', '_', $email) ?: 'persona';
                 $path = 'notifications_outbox/' . $tenantId . '/titular/' . $activationId . '/' . $ts . '-' . $safe . '.html';
-                Storage::disk('local')->put($path, $bodyHtml);
+                Storage::disk('local')->put($path, $emailBodyHtml);
                 $filesWritten++;
                 continue;
             }
             if (!$emailNotificationsEnabled) {
                 continue;
             }
-            Mail::html($bodyHtml, static function ($m) use ($email, $subject): void {
+            Mail::html($emailBodyHtml, static function ($m) use ($email, $subject): void {
                 $m->to($email)->subject($subject);
             });
             $sent++;
         }
-        foreach ($whatsappRecipients as $phone => $displayName) {
+        foreach ($whatsappRecipients as $phone => $recipientMeta) {
+            $targetEmail = strtolower(trim((string) (is_array($recipientMeta) ? ($recipientMeta['email'] ?? '') : '')));
+            $whatsappText = $includeCredentials
+                ? $this->appendCredentialsText($text, $tenant, $targetEmail !== '' ? $targetEmail : null)
+                : $text;
             if ($mode === 'file') {
                 $safe = preg_replace('/[^A-Za-z0-9._-]+/', '_', $phone) ?: 'whatsapp';
                 $path = 'notifications_outbox/' . $tenantId . '/titular/' . $activationId . '/' . $ts . '-wa-' . $safe . '.txt';
-                Storage::disk('local')->put($path, $text . "\n");
+                Storage::disk('local')->put($path, $whatsappText . "\n");
                 $whatsappFilesWritten++;
                 continue;
             }
             if (!$whatsappNotificationsEnabled) {
                 continue;
             }
-            $res = $this->sendWhatsappText($tenantId, $phone, $text, ['type' => 'titular', 'activation_id' => $activationId]);
+            $res = $this->sendWhatsappText($tenantId, $phone, $whatsappText, ['type' => 'titular', 'activation_id' => $activationId]);
             if (($res['sent'] ?? false) === true) {
                 $whatsappSent++;
             }
         }
-        foreach ($smsRecipients as $phone => $displayName) {
+        foreach ($smsRecipients as $phone => $recipientMeta) {
+            $targetEmail = strtolower(trim((string) (is_array($recipientMeta) ? ($recipientMeta['email'] ?? '') : '')));
+            $smsText = $includeCredentials
+                ? $this->appendCredentialsText($text, $tenant, $targetEmail !== '' ? $targetEmail : null)
+                : $text;
             if ($mode === 'file') {
                 $safe = preg_replace('/[^A-Za-z0-9._-]+/', '_', $phone) ?: 'sms';
                 $path = 'notifications_outbox/' . $tenantId . '/titular/' . $activationId . '/' . $ts . '-sms-' . $safe . '.txt';
-                Storage::disk('local')->put($path, $text . "\n");
+                Storage::disk('local')->put($path, $smsText . "\n");
                 $smsFilesWritten++;
                 continue;
             }
             if (!((bool) ($channels['sms_enabled'] ?? false))) {
                 continue;
             }
-            $res = $this->sendSmsText($tenantId, (string) $phone, $text, ['type' => 'titular', 'activation_id' => $activationId]);
+            $res = $this->sendSmsText($tenantId, (string) $phone, $smsText, ['type' => 'titular', 'activation_id' => $activationId]);
             if (($res['sent'] ?? false) === true) {
                 $smsSent++;
             }
@@ -2554,11 +2725,39 @@ class ActivationController extends Controller
         return nl2br($withLinks);
     }
 
-    private function buildCredentialsLines(?Tenant $tenant, ?string $email = null): array
+    private function resolveTenantLocale(?Tenant $tenant): string
+    {
+        $locale = strtolower(trim((string) ($tenant?->default_language ?? '')));
+        if (!in_array($locale, ['es', 'ca', 'en'], true)) {
+            $locale = 'es';
+        }
+        return $locale;
+    }
+
+    private function tenantTrans(string $key, ?Tenant $tenant, array $replace = []): string
+    {
+        $locale = $this->resolveTenantLocale($tenant);
+        $text = (string) trans($key, $replace, $locale);
+        if ($text === '' || $text === $key) {
+            $fallback = (string) trans($key, $replace, 'es');
+            if ($fallback !== '' && $fallback !== $key) {
+                return $fallback;
+            }
+        }
+        return $text;
+    }
+
+    private function buildCredentialsPayload(?Tenant $tenant, ?string $email = null): array
     {
         $enabled = (bool) ($tenant?->notifications_include_credentials ?? false);
         if (!$enabled) {
-            return [];
+            return [
+                'enabled' => false,
+                'email' => '',
+                'login_url' => '',
+                'reset_url' => '',
+                'lines' => [],
+            ];
         }
 
         $frontendUrl = rtrim((string) env('FRONTEND_URL', config('app.url')), '/');
@@ -2607,21 +2806,93 @@ class ActivationController extends Controller
             }
         }
 
+        $prefixReset = $this->tenantTrans('messages.auth.password_reset_email', $tenant, ['url' => $resetUrl]);
+        $prefixLoginByLang = [
+            'es' => 'Accede a la aplicación: ',
+            'ca' => "Accedeix a l'aplicació: ",
+            'en' => 'Access the application: ',
+        ];
+        $userByLang = [
+            'es' => 'Usuario: ',
+            'ca' => 'Usuari: ',
+            'en' => 'User: ',
+        ];
+        $passwordByLang = [
+            'es' => 'Contraseña: la habitual de acceso.',
+            'ca' => "Contrasenya: l'habitual d'accés.",
+            'en' => 'Password: your usual one.',
+        ];
+        $locale = $this->resolveTenantLocale($tenant);
+
         if ($resetUrl !== '') {
-            $lines[] = 'Acceso inicial / restablecer contraseña: ' . $resetUrl;
+            $lines[] = $prefixReset;
         } elseif ($loginUrl !== '') {
-            $lines[] = 'Accede a la aplicación: ' . $loginUrl;
+            $lines[] = ($prefixLoginByLang[$locale] ?? $prefixLoginByLang['es']) . $loginUrl;
         }
         if ($normalizedEmail !== '' && filter_var($normalizedEmail, FILTER_VALIDATE_EMAIL)) {
-            $lines[] = 'Usuario: ' . $normalizedEmail;
+            $lines[] = ($userByLang[$locale] ?? $userByLang['es']) . $normalizedEmail;
         }
         if ($resetUrl !== '') {
-            $lines[] = 'Define tu clave desde el enlace anterior.';
+            $lines[] = $this->tenantTrans('messages.auth.password_reset_email_ignore', $tenant);
         } else {
-            $lines[] = 'Contraseña: la habitual de acceso.';
+            $lines[] = $passwordByLang[$locale] ?? $passwordByLang['es'];
         }
 
-        return $lines;
+        return [
+            'enabled' => true,
+            'email' => $normalizedEmail,
+            'login_url' => $loginUrl,
+            'reset_url' => $resetUrl,
+            'lines' => $lines,
+        ];
+    }
+
+    private function buildCredentialsLines(?Tenant $tenant, ?string $email = null): array
+    {
+        $payload = $this->buildCredentialsPayload($tenant, $email);
+        return is_array($payload['lines'] ?? null) ? $payload['lines'] : [];
+    }
+
+    private function appendCredentialsText(string $text, ?Tenant $tenant, ?string $email = null): string
+    {
+        $base = rtrim($text);
+        $lines = $this->buildCredentialsLines($tenant, $email);
+        if (empty($lines)) {
+            return $base;
+        }
+        return $base . "\n\n" . implode("\n", $lines);
+    }
+
+    private function buildCredentialsHtml(?Tenant $tenant, ?string $email = null): string
+    {
+        $payload = $this->buildCredentialsPayload($tenant, $email);
+        $lines = is_array($payload['lines'] ?? null) ? $payload['lines'] : [];
+        if (empty($lines)) {
+            return '';
+        }
+        $resetUrl = trim((string) ($payload['reset_url'] ?? ''));
+        $safeResetUrl = htmlspecialchars($resetUrl, ENT_QUOTES, 'UTF-8');
+        $linesHtml = $this->renderNotificationHtml(implode("\n", $lines));
+        $credentialsTitleByLang = [
+            'es' => 'Credenciales de acceso',
+            'ca' => "Credencials d'accés",
+            'en' => 'Access credentials',
+        ];
+        $locale = $this->resolveTenantLocale($tenant);
+        $credentialsTitle = $credentialsTitleByLang[$locale] ?? $credentialsTitleByLang['es'];
+        $cta = htmlspecialchars($this->tenantTrans('messages.auth.password_reset_email_cta', $tenant), ENT_QUOTES, 'UTF-8');
+
+        return '<div style="margin-top:12px;padding:12px;border:1px solid #e5e5e5;border-radius:8px;background:#fff8f8;">'
+            . '<div style="font-weight:700;margin-bottom:10px;">' . htmlspecialchars($credentialsTitle, ENT_QUOTES, 'UTF-8') . '</div>'
+            . ($resetUrl !== ''
+                ? '<p style="margin:0 0 10px;">'
+                    . '<a href="' . $safeResetUrl . '" target="_blank" rel="noopener noreferrer" style="display:inline-block;background:#a91023;color:#fff;text-decoration:none;padding:10px 16px;border-radius:8px;font-weight:700;">'
+                    . $cta
+                    . '</a>'
+                    . '</p>'
+                : '')
+            . '<div style="font-size:13px;color:#333;">' . $linesHtml . '</div>'
+            . '</div>';
     }
 
     private function postWhatsappWebhook(string $webhookUrl, array $payload): HttpClientResponse
@@ -2780,11 +3051,11 @@ class ActivationController extends Controller
                     'message' => $message,
                 ]);
 
-                \Log::info("SMS Webhook Intentando enviar:", $payload);
+                Log::info("SMS Webhook Intentando enviar:", $payload);
                 $res = Http::timeout(8)->post($webhookUrl, $payload);
 
                 if ($res->failed()) {
-                    \Log::error("SMS Webhook Falló:", ['status' => $res->status(), 'body' => $res->body()]);
+                    Log::error("SMS Webhook Falló:", ['status' => $res->status(), 'body' => $res->body()]);
                     return ['sent' => false, 'error' => 'webhook ' . $res->status()];
                 }
                 return ['sent' => true, 'error' => ''];
@@ -2796,7 +3067,7 @@ class ActivationController extends Controller
             $url = 'https://api.brevo.com/v3/transactionalSMS/sms';
 
             // LOG DE PRE-ENVÍO
-            \Log::info("Brevo SMS: Iniciando petición", [
+            Log::info("Brevo SMS: Iniciando petición", [
                 'to' => $normalizedPhone,
                 'sender' => mb_substr($sender, 0, 11),
                 'message_preview' => mb_substr($message, 0, 30) . '...'
@@ -2818,7 +3089,7 @@ class ActivationController extends Controller
             // LOG DE RESPUESTA
             if ($response->failed()) {
                 $errorData = $response->json();
-                \Log::error("Brevo SMS Error:", [
+                Log::error("Brevo SMS Error:", [
                     'status' => $response->status(),
                     'response' => $errorData
                 ]);
@@ -2829,11 +3100,11 @@ class ActivationController extends Controller
                 ];
             }
 
-            \Log::info("Brevo SMS Enviado con éxito:", ['response' => $response->json()]);
+            Log::info("Brevo SMS Enviado con éxito:", ['response' => $response->json()]);
             return ['sent' => true, 'error' => ''];
 
         } catch (\Throwable $e) {
-            \Log::critical("SMS Excepción Crítica:", [
+            Log::critical("SMS Excepción Crítica:", [
                 'message' => $e->getMessage(),
                 'file' => $e->getFile(),
                 'line' => $e->getLine()
@@ -2853,6 +3124,30 @@ class ActivationController extends Controller
         $activationId = trim($activationId);
         if ($activationId === '') {
             return response()->json(['message' => 'Invalid activation id.'], 422);
+        }
+
+        $nivelInfo = $this->resolveActivationLevelInfo($tenantId, $activationId);
+        if (($nivelInfo['is_normalidad'] ?? false) === true) {
+            return response()->json([
+                'message' => 'Notificaciones omitidas para nivel Normalidad.',
+                'mode' => $this->resolveNotificationMode(),
+                'sent' => 0,
+                'files_written' => 0,
+                'whatsapp_sent' => 0,
+                'whatsapp_files_written' => 0,
+                'sms_sent' => 0,
+                'sms_files_written' => 0,
+                'recipients' => 0,
+                'whatsapp_recipients' => 0,
+                'sms_recipients' => 0,
+                'warnings' => ['No se envían notificaciones en Normalidad.'],
+                'debug' => [
+                    'skipped_normalidad' => true,
+                    'nivel_cod' => (string) ($nivelInfo['nivel_cod'] ?? ''),
+                    'nivel_nombre' => (string) ($nivelInfo['nivel_nombre'] ?? ''),
+                    'nivel_label' => (string) ($nivelInfo['nivel_label'] ?? ''),
+                ],
+            ]);
         }
 
         $validated = $request->validate([
@@ -3041,7 +3336,7 @@ class ActivationController extends Controller
             $emailSent = false;
             $emailError = '';
             $lines = [];
-            $lines[] = 'ACTIVACION: ' . $activationId;
+            $lines[] = 'FECHA/HORA ACTIVACION: ' . $this->resolveActivationDateTimeLabel($tenantId, $activationId);
             if (!$productionMode) {
                 $lines[] = 'MODO: PRUEBA';
             }
@@ -3055,12 +3350,23 @@ class ActivationController extends Controller
                 $lines[] = $detalle;
             }
             $body = implode("\n", $lines) . "\n";
+            if ($includeCredentials) {
+                $body = $this->appendCredentialsText($body, $tenant, $productionMode && $to !== '' ? $to : null) . "\n";
+            }
+            $bodyHtml = '<div style="font-family: Arial, sans-serif; font-size: 14px; color: #111; line-height: 1.6;">'
+                . $this->renderNotificationHtml(trim($body))
+                . '</div>';
+            if ($includeCredentials) {
+                $bodyHtml .= $this->buildCredentialsHtml($tenant, $productionMode && $to !== '' ? $to : null);
+            }
 
             if ($mode === 'file') {
                 $safeTarget = $productionMode ? ($to !== '' ? $to : (string) ($p['per_id'] ?? 'persona')) : ($testEmails[0] ?? 'test');
                 $safe = preg_replace('/[^A-Za-z0-9._-]+/', '_', $safeTarget) ?: 'persona';
                 $path = 'notifications_outbox/' . $tenantId . '/' . $activationId . '/' . $ts . '-end-' . $safe . '.txt';
                 Storage::disk('local')->put($path, $body);
+                $htmlPath = 'notifications_outbox/' . $tenantId . '/' . $activationId . '/' . $ts . '-end-' . $safe . '.html';
+                Storage::disk('local')->put($htmlPath, $bodyHtml);
                 $jsonPath = 'notifications_outbox/' . $tenantId . '/' . $activationId . '/' . $ts . '-end-' . $safe . '.json';
                 Storage::disk('local')->put($jsonPath, json_encode([
                     'activation_id' => $activationId,
@@ -3082,7 +3388,7 @@ class ActivationController extends Controller
                 } elseif ($productionMode) {
                     if ($to !== '') {
                         try {
-                            Mail::raw($body, static function ($m) use ($to, $subject) {
+                            Mail::html($bodyHtml, static function ($m) use ($to, $subject) {
                                 $m->to($to)->subject($subject);
                             });
                             $sent++;
@@ -3093,7 +3399,7 @@ class ActivationController extends Controller
                         }
                     }
                 } elseif (!empty($testEmails)) {
-                    Mail::raw($body, static function ($m) use ($testEmails, $subject) {
+                    Mail::html($bodyHtml, static function ($m) use ($testEmails, $subject) {
                         $m->to($testEmails)->subject($subject);
                     });
                     $sent++;
@@ -3140,7 +3446,10 @@ class ActivationController extends Controller
                 if ($phone === '') {
                     continue;
                 }
-                $whatsappTargets[$phone] = $phone;
+                $whatsappTargets[$phone] = [
+                    'phone' => $phone,
+                    'email' => strtolower(trim((string) ($p['email'] ?? ''))),
+                ];
             }
         } else {
             foreach ($testWhatsappNumbers as $phone) {
@@ -3148,11 +3457,22 @@ class ActivationController extends Controller
                 if ($normalized === '') {
                     continue;
                 }
-                $whatsappTargets[$normalized] = $normalized;
+                $whatsappTargets[$normalized] = [
+                    'phone' => $normalized,
+                    'email' => null,
+                ];
             }
         }
-        $whatsappMessage = $subject . ($detalle !== '' ? "\n\n" . $detalle : '');
-        foreach (array_keys($whatsappTargets) as $phone) {
+        foreach ($whatsappTargets as $target) {
+            $phone = (string) ($target['phone'] ?? '');
+            if ($phone === '') {
+                continue;
+            }
+            $targetEmail = strtolower(trim((string) ($target['email'] ?? '')));
+            $whatsappMessage = $subject . ($detalle !== '' ? "\n\n" . $detalle : '');
+            if ($includeCredentials) {
+                $whatsappMessage = $this->appendCredentialsText($whatsappMessage, $tenant, $targetEmail !== '' ? $targetEmail : null);
+            }
             if ($mode === 'file') {
                 $safe = preg_replace('/[^A-Za-z0-9._-]+/', '_', $phone) ?: 'whatsapp';
                 $path = 'notifications_outbox/' . $tenantId . '/' . $activationId . '/' . $ts . '-end-wa-' . $safe . '.txt';
@@ -3178,7 +3498,10 @@ class ActivationController extends Controller
                 if ($phone === '') {
                     continue;
                 }
-                $smsTargets[$phone] = $phone;
+                $smsTargets[$phone] = [
+                    'phone' => $phone,
+                    'email' => strtolower(trim((string) ($p['email'] ?? ''))),
+                ];
             }
         } else {
             foreach ($testSmsNumbers as $phone) {
@@ -3186,11 +3509,22 @@ class ActivationController extends Controller
                 if ($normalized === '') {
                     continue;
                 }
-                $smsTargets[$normalized] = $normalized;
+                $smsTargets[$normalized] = [
+                    'phone' => $normalized,
+                    'email' => null,
+                ];
             }
         }
-        $smsMessage = $whatsappMessage;
-        foreach (array_keys($smsTargets) as $phone) {
+        foreach ($smsTargets as $target) {
+            $phone = (string) ($target['phone'] ?? '');
+            if ($phone === '') {
+                continue;
+            }
+            $targetEmail = strtolower(trim((string) ($target['email'] ?? '')));
+            $smsMessage = $subject . ($detalle !== '' ? "\n\n" . $detalle : '');
+            if ($includeCredentials) {
+                $smsMessage = $this->appendCredentialsText($smsMessage, $tenant, $targetEmail !== '' ? $targetEmail : null);
+            }
             if ($mode === 'file') {
                 $safe = preg_replace('/[^A-Za-z0-9._-]+/', '_', $phone) ?: 'sms';
                 $path = 'notifications_outbox/' . $tenantId . '/' . $activationId . '/' . $ts . '-end-sms-' . $safe . '.txt';
@@ -6415,6 +6749,85 @@ class ActivationController extends Controller
     private function tenantNowDateTime(string $tenantId): string
     {
         return $this->tenantNow($tenantId)->toDateTimeString();
+    }
+
+    private function resolveActivationDateTimeLabel(string $tenantId, string $activationId): string
+    {
+        $fallback = $this->tenantNowDateTime($tenantId);
+        if ($activationId === '' || !Schema::hasTable('activacion_del_plan_trs')) {
+            return $fallback;
+        }
+
+        $activation = DB::table('activacion_del_plan_trs')
+            ->when(
+                Schema::hasColumn('activacion_del_plan_trs', 'ac_de_pl-tenant_id'),
+                static fn($q) => $q->where('ac_de_pl-tenant_id', $tenantId),
+            )
+            ->where('ac_de_pl-id', $activationId)
+            ->first();
+        if (!$activation) {
+            return $fallback;
+        }
+
+        $date = trim((string) ($activation->{'ac_de_pl-fecha_activac'} ?? ''));
+        $time = trim((string) ($activation->{'ac_de_pl-hora_activac'} ?? ''));
+        if ($date !== '' && $time !== '') {
+            return $date . ' ' . $time;
+        }
+        if ($date !== '') {
+            return $date;
+        }
+        if ($time !== '') {
+            return $time;
+        }
+
+        return $fallback;
+    }
+
+    private function resolveActivationLevelInfo(string $tenantId, string $activationId): array
+    {
+        $fallback = [
+            'is_normalidad' => false,
+            'nivel_cod' => '',
+            'nivel_nombre' => '',
+            'nivel_label' => '',
+        ];
+        if ($activationId === '' || !Schema::hasTable('activacion_del_plan_trs')) {
+            return $fallback;
+        }
+
+        $activation = DB::table('activacion_del_plan_trs')
+            ->when(
+                Schema::hasColumn('activacion_del_plan_trs', 'ac_de_pl-tenant_id'),
+                static fn($q) => $q->where('ac_de_pl-tenant_id', $tenantId),
+            )
+            ->where('ac_de_pl-id', $activationId)
+            ->first(['ac_de_pl-ni_al_id-fk-inicial']);
+        $nivelId = trim((string) ($activation->{'ac_de_pl-ni_al_id-fk-inicial'} ?? ''));
+        if ($nivelId === '' || !Schema::hasTable('nivel_alerta_cat')) {
+            return $fallback;
+        }
+
+        $nivel = DB::table('nivel_alerta_cat')
+            ->when(
+                Schema::hasColumn('nivel_alerta_cat', 'ni_al-tenant_id'),
+                static fn($q) => $q->where('ni_al-tenant_id', $tenantId),
+            )
+            ->where('ni_al-id', $nivelId)
+            ->first(['ni_al-cod', 'ni_al-nombre']);
+        $nivelCod = strtoupper(trim((string) ($nivel->{'ni_al-cod'} ?? '')));
+        $nivelNombre = trim((string) ($nivel->{'ni_al-nombre'} ?? ''));
+        $nivelLabel = $nivelNombre !== '' ? $nivelNombre : ($nivelCod !== '' ? $nivelCod : $nivelId);
+        $nivelUpper = strtoupper($nivelNombre !== '' ? $nivelNombre : $nivelLabel);
+        $isNormalidad = ($nivelUpper !== '' && str_contains($nivelUpper, 'NORMALIDAD'))
+            || in_array($nivelCod, ['NORMALIDAD', 'NORMAL', 'NOR'], true);
+
+        return [
+            'is_normalidad' => $isNormalidad,
+            'nivel_cod' => $nivelCod,
+            'nivel_nombre' => $nivelNombre,
+            'nivel_label' => $nivelLabel,
+        ];
     }
 
     private function tenantNowDate(string $tenantId): string

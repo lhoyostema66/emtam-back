@@ -283,7 +283,7 @@ class TableCrudController extends Controller
             unset($payload['per-id']);
 
             $required = array_values(array_filter(
-                ['per-nombre', 'per-apellido_1', 'per-num_doc', 'per-email'],
+                ['per-nombre', 'per-apellido_1', 'per-email'],
                 static fn ($c) => in_array($c, $columns, true)
             ));
 

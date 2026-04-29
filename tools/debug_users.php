@@ -22,7 +22,7 @@ foreach ($personas as $p) {
 
 echo "\nRoles por persona (Morell):\n";
 $roles = DB::table('persona_rol_cfg')
-    ->select('pe_ro-per_id-fk', 'pe_ro-rol_id-fk', 'pe_ro-tenant_id', 'pe_ro-activo')
+    ->select(['pe_ro-per_id-fk', 'pe_ro-rol_id-fk', 'pe_ro-tenant_id', 'pe_ro-activo'])
     ->orderBy('pe_ro-per_id-fk')
     ->get();
 foreach ($roles as $r) {
