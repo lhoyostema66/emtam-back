@@ -265,6 +265,21 @@ Artisan::command('activaciones:auto-delegar {--tenant=} {--dry-run}', function (
             }
             unset($rows);
 
+            $directorPersonaIds = [];
+            if (Schema::hasTable('users') && Schema::hasColumn('users', 'persona_id')) {
+                $directorRows = DB::table('users')
+                    ->where('tenant_id', $tenantId)
+                    ->whereNotNull('persona_id')
+                    ->whereRaw("LOWER(TRIM(COALESCE(`perfil`, ''))) = 'director'")
+                    ->get(['persona_id']);
+                foreach ($directorRows as $dr) {
+                    $directorPerId = trim((string) ($dr->persona_id ?? ''));
+                    if ($directorPerId !== '') {
+                        $directorPersonaIds[$directorPerId] = true;
+                    }
+                }
+            }
+
             $execRows = DB::table('ejecucion_accion_trs')
                 ->when(
                     Schema::hasColumn('ejecucion_accion_trs', 'ej_ac-tenant_id'),
@@ -379,6 +394,8 @@ Artisan::command('activaciones:auto-delegar {--tenant=} {--dry-run}', function (
                 $currentAsignId = trim((string) ($ej->{'ej_ac-as_en_fu_id-fk'} ?? ''));
                 $currentAsign = $currentAsignId !== '' ? ($assignmentById[$currentAsignId] ?? null) : null;
                 $currentPerId = trim((string) ($currentAsign?->{'as_en_fu-per_id-fk'} ?? ''));
+                $titularEsDirector = $titularId !== '' && isset($directorPersonaIds[$titularId]);
+                $asignadoEsDirector = $currentPerId !== '' && isset($directorPersonaIds[$currentPerId]);
 
                 $titularConfirmado = ($confirmedByPerson[$titularId] ?? false) === true ? 'SI' : 'NO';
                 $asignadoConfirmado = ($confirmedByPerson[$currentPerId] ?? false) === true ? 'SI' : 'NO';
@@ -386,6 +403,11 @@ Artisan::command('activaciones:auto-delegar {--tenant=} {--dry-run}', function (
                 Log::debug("  - Verificando Titular $titularId (Confirmado: $titularConfirmado) | Asignado Actual $currentPerId (Confirmado: $asignadoConfirmado)");
 
                 if ($titularId === '') {
+                    continue;
+                }
+
+                if ($titularEsDirector || $asignadoEsDirector) {
+                    Log::debug("    * Saltando Rol $roleId: perfil Director excluido de autodelegación.");
                     continue;
                 }
 
@@ -915,7 +937,7 @@ Artisan::command('csv:validate {--dir=} {--limit=0} {--json} {--all} {--mode=} {
     $foreignKeys = [];
     if ($driver === 'mysql') {
         $foreignKeys = DB::table('information_schema.KEY_COLUMN_USAGE')
-            ->select('TABLE_NAME', 'REFERENCED_TABLE_NAME')
+            ->select(['TABLE_NAME', 'REFERENCED_TABLE_NAME'])
             ->where('TABLE_SCHEMA', $dbName)
             ->whereNotNull('REFERENCED_TABLE_NAME')
             ->get();
@@ -1392,7 +1414,7 @@ Artisan::command('csv:migrate {--dir=} {--dry-run} {--yes} {--limit=0}', functio
             $requiredColumns = array_values(array_map(
                 static fn($r) => $r->column_name,
                 DB::table('information_schema.columns')
-                    ->select('column_name', 'is_nullable', 'column_default', 'extra')
+                    ->select(['column_name', 'is_nullable', 'column_default', 'extra'])
                     ->where('table_schema', $dbName)
                     ->where('table_name', $table)
                     ->where('is_nullable', 'NO')

@@ -617,6 +617,7 @@ class ActivationController extends Controller
                     'nombre' => $nombre !== '' ? $nombre : $perId,
                     'acciones' => [],
                     'acciones_index' => [],
+                    'auto_confirm_director' => false,
                 ];
                 if (($byPerson[$perId]['email'] ?? null) === null && $email !== '') {
                     $byPerson[$perId]['email'] = $email;
@@ -691,6 +692,7 @@ class ActivationController extends Controller
                         'nombre' => $nombre !== '' ? $nombre : $perId,
                         'acciones' => [],
                         'acciones_index' => [],
+                        'auto_confirm_director' => false,
                     ];
                     if (($byPerson[$perId]['email'] ?? null) === null && $email !== '') {
                         $byPerson[$perId]['email'] = $email;
@@ -741,6 +743,16 @@ class ActivationController extends Controller
                 $allUsersRows = $usersQuery->get($select);
                 foreach ($allUsersRows as $ur) {
                     $perId = trim((string) ($ur->per_id ?? ''));
+                    $email = strtolower(trim((string) (($ur->per_email ?? null) ?: ($ur->user_email ?? ''))));
+                    if ($perId === '' && $email !== '') {
+                        foreach ($byPerson as $existingPerId => $existingPerson) {
+                            $existingEmail = strtolower(trim((string) ($existingPerson['email'] ?? '')));
+                            if ($existingEmail !== '' && $existingEmail === $email) {
+                                $perId = (string) $existingPerId;
+                                break;
+                            }
+                        }
+                    }
                     if ($perId === '') {
                         $userId = trim((string) ($ur->user_id ?? ''));
                         if ($userId === '') {
@@ -748,7 +760,6 @@ class ActivationController extends Controller
                         }
                         $perId = 'USR:' . $userId;
                     }
-                    $email = strtolower(trim((string) (($ur->per_email ?? null) ?: ($ur->user_email ?? ''))));
                     $telMov = trim((string) ($ur->tel_mov ?? ''));
                     $nombre = trim(implode(' ', array_filter([
                         (string) ($ur->per_nombre ?? ''),
@@ -765,6 +776,7 @@ class ActivationController extends Controller
                         'nombre' => $nombre !== '' ? $nombre : $perId,
                         'acciones' => [],
                         'acciones_index' => [],
+                        'auto_confirm_director' => false,
                     ];
                     if (($byPerson[$perId]['email'] ?? null) === null && $email !== '') {
                         $byPerson[$perId]['email'] = $email;
@@ -774,6 +786,10 @@ class ActivationController extends Controller
                     }
                     if (($byPerson[$perId]['nombre'] ?? '') === $perId && $nombre !== '') {
                         $byPerson[$perId]['nombre'] = $nombre;
+                    }
+                    $userPerfil = strtolower(trim((string) ($ur->user_perfil ?? '')));
+                    if ($userPerfil === 'director' && !str_starts_with($perId, 'USR:')) {
+                        $byPerson[$perId]['auto_confirm_director'] = true;
                     }
                 }
             }
@@ -1197,6 +1213,9 @@ class ActivationController extends Controller
                     $rawTo = trim((string) ($p['email'] ?? ''));
                     $to = filter_var($rawTo, FILTER_VALIDATE_EMAIL) ? strtolower($rawTo) : '';
                     $subject = $emailSubject;
+                    $autoConfirmDirector = (bool) ($p['auto_confirm_director'] ?? false);
+                    $personPerId = (string) ($p['per_id'] ?? '');
+                    $isSyntheticPerson = str_starts_with($personPerId, 'USR:');
                     $accionesByTipo = $buildActionsByTipo(is_array($p['acciones'] ?? null) ? $p['acciones'] : []);
                     $hasTitular = !empty($accionesByTipo['TITULAR'] ?? []);
                     $hasSuplente = !empty($accionesByTipo['SUPLENTE'] ?? []);
@@ -1328,8 +1347,9 @@ class ActivationController extends Controller
                     }
 
                     if (Schema::hasTable('notificacion_envio_trs')) {
+                        $notifId = 'NOEN-' . Str::uuid()->toString();
                         $insert = [
-                            'no_en-id' => 'NOEN-' . Str::uuid()->toString(),
+                            'no_en-id' => $notifId,
                             'no_en-tenant_id' => $tenantId,
                             'no_en-ac_de_pl_id-fk' => $activationId,
                             'no_en-per_id-fk' => $p['per_id'],
@@ -1350,10 +1370,24 @@ class ActivationController extends Controller
                         if (Schema::hasColumn('notificacion_envio_trs', 'no_en-modo')) {
                             $insert['no_en-modo'] = $modoLabel;
                         }
+                        $notificationInserted = false;
                         try {
                             DB::table('notificacion_envio_trs')->insert($insert);
+                            $notificationInserted = true;
                         } catch (\Throwable $logError) {
                             $warnings[] = 'No se pudo registrar notificación email para persona ' . $p['per_id'] . ': ' . $logError->getMessage();
+                        }
+                        if ($mode !== 'file' && $productionMode && $autoConfirmDirector && !$isSyntheticPerson) {
+                            $autoConfirm = $this->confirmAvailabilityForPerson(
+                                $tenantId,
+                                $activationId,
+                                $personPerId,
+                                'Confirmación automática por perfil Director',
+                                $notificationInserted ? $notifId : null,
+                            );
+                            if (($autoConfirm['error'] ?? null) !== null) {
+                                $warnings[] = 'No se pudo registrar confirmación automática para Director ' . (string) ($p['per_id'] ?? '') . ': ' . (string) ($autoConfirm['error'] ?? '');
+                            }
                         }
                     }
 
@@ -3938,20 +3972,6 @@ class ActivationController extends Controller
             return response()->json(['message' => 'Persona not found.'], 404);
         }
 
-        if (!Schema::hasTable('ejecucion_accion_trs') || !Schema::hasTable('asignacion_en_funciones_trs')) {
-            return response()->json(['message' => 'Missing required tables.'], 422);
-        }
-
-        $updated = DB::table('ejecucion_accion_trs as ej')
-            ->join('asignacion_en_funciones_trs as asg', 'asg.as_en_fu-id', '=', 'ej.ej_ac-as_en_fu_id-fk')
-            ->where('ej.ej_ac-tenant_id', $tenantId)
-            ->where('ej.ej_ac-ac_de_pl_id-fk', $activationId)
-            ->where('asg.as_en_fu-per_id-fk', $perId)
-            ->whereRaw("UPPER(COALESCE(`ej`.`ej_ac-estado`, '')) <> 'CONFIRMADO'")
-            ->update([
-                'ej_ac-estado' => 'CONFIRMADO',
-            ]);
-
         $noEnId = null;
         if (Schema::hasTable('notificacion_envio_trs')) {
             $buildNotifQuery = static function () use ($activationId, $perId) {
@@ -3975,86 +3995,22 @@ class ActivationController extends Controller
             $noEnId = trim((string) ($last?->{'no_en-id'} ?? '')) ?: null;
         }
 
-        $confirmationRequiresNotifId = Schema::hasTable('notificacion_confirmacion_trs')
-            && Schema::hasColumn('notificacion_confirmacion_trs', 'no_co-no_en_id-fk');
-        if ($confirmationRequiresNotifId && $noEnId === null) {
-            if (!Schema::hasTable('notificacion_envio_trs') || !Schema::hasColumn('notificacion_envio_trs', 'no_en-id')) {
-                return response()->json([
-                    'message' => 'No se pudo vincular la confirmación con su notificación de envío.',
-                    'code' => 'CONFIRMATION_NOTIF_LINK_MISSING',
-                ], 422);
-            }
-
-            $syntheticNoEnId = 'NOEN-' . Str::uuid()->toString();
-            $syntheticInsert = [];
-            if (Schema::hasColumn('notificacion_envio_trs', 'no_en-id')) {
-                $syntheticInsert['no_en-id'] = $syntheticNoEnId;
-            }
-            if (Schema::hasColumn('notificacion_envio_trs', 'no_en-tenant_id')) {
-                $syntheticInsert['no_en-tenant_id'] = $tenantId;
-            }
-            if (Schema::hasColumn('notificacion_envio_trs', 'no_en-ac_de_pl_id-fk')) {
-                $syntheticInsert['no_en-ac_de_pl_id-fk'] = $activationId;
-            }
-            if (Schema::hasColumn('notificacion_envio_trs', 'no_en-per_id-fk')) {
-                $syntheticInsert['no_en-per_id-fk'] = $perId;
-            }
-            if (Schema::hasColumn('notificacion_envio_trs', 'no_en-gr_op_id-fk')) {
-                $syntheticInsert['no_en-gr_op_id-fk'] = null;
-            }
-            if (Schema::hasColumn('notificacion_envio_trs', 'no_en-rol_id-fk')) {
-                $syntheticInsert['no_en-rol_id-fk'] = null;
-            }
-            if (Schema::hasColumn('notificacion_envio_trs', 'no_en-ca_co_id-fk')) {
-                $syntheticInsert['no_en-ca_co_id-fk'] = null;
-            }
-            if (Schema::hasColumn('notificacion_envio_trs', 'no_en-mensaje')) {
-                $syntheticInsert['no_en-mensaje'] = 'Registro técnico para vincular confirmación de disponibilidad';
-            }
-            if (Schema::hasColumn('notificacion_envio_trs', 'no_en-ts')) {
-                $syntheticInsert['no_en-ts'] = $this->tenantNowDateTime($tenantId);
-            }
-            if (Schema::hasColumn('notificacion_envio_trs', 'no_en-estado')) {
-                $syntheticInsert['no_en-estado'] = 'ENVIADO';
-            }
-            if (Schema::hasColumn('notificacion_envio_trs', 'no_en-num_de_intento')) {
-                $syntheticInsert['no_en-num_de_intento'] = '0';
-            }
-            if (Schema::hasColumn('notificacion_envio_trs', 'no_en-modo')) {
-                $syntheticInsert['no_en-modo'] = 'EMAIL';
-            }
-
-            DB::table('notificacion_envio_trs')->insert($syntheticInsert);
-            $noEnId = $syntheticNoEnId;
+        $confirmationResult = $this->confirmAvailabilityForPerson(
+            $tenantId,
+            $activationId,
+            $perId,
+            isset($validated['respuesta']) ? (string) $validated['respuesta'] : null,
+            $noEnId
+        );
+        if (($confirmationResult['error'] ?? null) !== null) {
+            return response()->json([
+                'message' => (string) ($confirmationResult['error'] ?? 'No se pudo registrar la confirmación.'),
+                'code' => (string) ($confirmationResult['code'] ?? 'CONFIRMATION_ERROR'),
+            ], 422);
         }
-
-        $insertedConfirmation = false;
-        if (Schema::hasTable('notificacion_confirmacion_trs')) {
-            $payload = [];
-            if (Schema::hasColumn('notificacion_confirmacion_trs', 'no_co-id')) {
-                $payload['no_co-id'] = 'NOCO-' . Str::uuid()->toString();
-            }
-            if (Schema::hasColumn('notificacion_confirmacion_trs', 'no_co-tenant_id')) {
-                $payload['no_co-tenant_id'] = $tenantId;
-            }
-            if (Schema::hasColumn('notificacion_confirmacion_trs', 'no_co-no_en_id-fk')) {
-                $payload['no_co-no_en_id-fk'] = $noEnId;
-            }
-            if (Schema::hasColumn('notificacion_confirmacion_trs', 'no_co-confirmado')) {
-                $payload['no_co-confirmado'] = 'SI';
-            }
-            if (Schema::hasColumn('notificacion_confirmacion_trs', 'no_co-ts')) {
-                $payload['no_co-ts'] = $this->tenantNowDateTime($tenantId);
-            }
-            if (Schema::hasColumn('notificacion_confirmacion_trs', 'no_co-respuesta')) {
-                $payload['no_co-respuesta'] = $validated['respuesta'] ?? null;
-            }
-
-            if (!empty($payload)) {
-                DB::table('notificacion_confirmacion_trs')->insert($payload);
-                $insertedConfirmation = true;
-            }
-        }
+        $updated = (int) ($confirmationResult['updated'] ?? 0);
+        $insertedConfirmation = (bool) ($confirmationResult['confirmation_inserted'] ?? false);
+        $noEnId = $confirmationResult['confirmation_notif_id'] ?? $noEnId;
 
         $this->auditLogger->logFromRequest($request, [
             'event_type' => 'action_status_changed',
@@ -6782,6 +6738,137 @@ class ActivationController extends Controller
         }
 
         return $fallback;
+    }
+
+    private function confirmAvailabilityForPerson(
+        string $tenantId,
+        string $activationId,
+        string $perId,
+        ?string $respuesta = null,
+        ?string $noEnId = null
+    ): array {
+        $perId = trim($perId);
+        if ($perId === '') {
+            return [
+                'updated' => 0,
+                'confirmation_inserted' => false,
+                'confirmation_notif_id' => $noEnId,
+                'error' => 'Persona no válida para confirmar.',
+                'code' => 'CONFIRMATION_PERSON_MISSING',
+            ];
+        }
+
+        if (!Schema::hasTable('ejecucion_accion_trs') || !Schema::hasTable('asignacion_en_funciones_trs')) {
+            return [
+                'updated' => 0,
+                'confirmation_inserted' => false,
+                'confirmation_notif_id' => $noEnId,
+                'error' => 'Missing required tables.',
+                'code' => 'CONFIRMATION_REQUIRED_TABLES_MISSING',
+            ];
+        }
+
+        $updated = DB::table('ejecucion_accion_trs as ej')
+            ->join('asignacion_en_funciones_trs as asg', 'asg.as_en_fu-id', '=', 'ej.ej_ac-as_en_fu_id-fk')
+            ->where('ej.ej_ac-tenant_id', $tenantId)
+            ->where('ej.ej_ac-ac_de_pl_id-fk', $activationId)
+            ->where('asg.as_en_fu-per_id-fk', $perId)
+            ->whereRaw("UPPER(COALESCE(`ej`.`ej_ac-estado`, '')) <> 'CONFIRMADO'")
+            ->update([
+                'ej_ac-estado' => 'CONFIRMADO',
+            ]);
+
+        $confirmationRequiresNotifId = Schema::hasTable('notificacion_confirmacion_trs')
+            && Schema::hasColumn('notificacion_confirmacion_trs', 'no_co-no_en_id-fk');
+        if ($confirmationRequiresNotifId && $noEnId === null) {
+            if (!Schema::hasTable('notificacion_envio_trs') || !Schema::hasColumn('notificacion_envio_trs', 'no_en-id')) {
+                return [
+                    'updated' => (int) $updated,
+                    'confirmation_inserted' => false,
+                    'confirmation_notif_id' => null,
+                    'error' => 'No se pudo vincular la confirmación con su notificación de envío.',
+                    'code' => 'CONFIRMATION_NOTIF_LINK_MISSING',
+                ];
+            }
+
+            $syntheticNoEnId = 'NOEN-' . Str::uuid()->toString();
+            $syntheticInsert = [];
+            if (Schema::hasColumn('notificacion_envio_trs', 'no_en-id')) {
+                $syntheticInsert['no_en-id'] = $syntheticNoEnId;
+            }
+            if (Schema::hasColumn('notificacion_envio_trs', 'no_en-tenant_id')) {
+                $syntheticInsert['no_en-tenant_id'] = $tenantId;
+            }
+            if (Schema::hasColumn('notificacion_envio_trs', 'no_en-ac_de_pl_id-fk')) {
+                $syntheticInsert['no_en-ac_de_pl_id-fk'] = $activationId;
+            }
+            if (Schema::hasColumn('notificacion_envio_trs', 'no_en-per_id-fk')) {
+                $syntheticInsert['no_en-per_id-fk'] = $perId;
+            }
+            if (Schema::hasColumn('notificacion_envio_trs', 'no_en-gr_op_id-fk')) {
+                $syntheticInsert['no_en-gr_op_id-fk'] = null;
+            }
+            if (Schema::hasColumn('notificacion_envio_trs', 'no_en-rol_id-fk')) {
+                $syntheticInsert['no_en-rol_id-fk'] = null;
+            }
+            if (Schema::hasColumn('notificacion_envio_trs', 'no_en-ca_co_id-fk')) {
+                $syntheticInsert['no_en-ca_co_id-fk'] = null;
+            }
+            if (Schema::hasColumn('notificacion_envio_trs', 'no_en-mensaje')) {
+                $syntheticInsert['no_en-mensaje'] = 'Registro técnico para vincular confirmación de disponibilidad';
+            }
+            if (Schema::hasColumn('notificacion_envio_trs', 'no_en-ts')) {
+                $syntheticInsert['no_en-ts'] = $this->tenantNowDateTime($tenantId);
+            }
+            if (Schema::hasColumn('notificacion_envio_trs', 'no_en-estado')) {
+                $syntheticInsert['no_en-estado'] = 'ENVIADO';
+            }
+            if (Schema::hasColumn('notificacion_envio_trs', 'no_en-num_de_intento')) {
+                $syntheticInsert['no_en-num_de_intento'] = '0';
+            }
+            if (Schema::hasColumn('notificacion_envio_trs', 'no_en-modo')) {
+                $syntheticInsert['no_en-modo'] = 'EMAIL';
+            }
+
+            DB::table('notificacion_envio_trs')->insert($syntheticInsert);
+            $noEnId = $syntheticNoEnId;
+        }
+
+        $insertedConfirmation = false;
+        if (Schema::hasTable('notificacion_confirmacion_trs')) {
+            $payload = [];
+            if (Schema::hasColumn('notificacion_confirmacion_trs', 'no_co-id')) {
+                $payload['no_co-id'] = 'NOCO-' . Str::uuid()->toString();
+            }
+            if (Schema::hasColumn('notificacion_confirmacion_trs', 'no_co-tenant_id')) {
+                $payload['no_co-tenant_id'] = $tenantId;
+            }
+            if (Schema::hasColumn('notificacion_confirmacion_trs', 'no_co-no_en_id-fk')) {
+                $payload['no_co-no_en_id-fk'] = $noEnId;
+            }
+            if (Schema::hasColumn('notificacion_confirmacion_trs', 'no_co-confirmado')) {
+                $payload['no_co-confirmado'] = 'SI';
+            }
+            if (Schema::hasColumn('notificacion_confirmacion_trs', 'no_co-ts')) {
+                $payload['no_co-ts'] = $this->tenantNowDateTime($tenantId);
+            }
+            if (Schema::hasColumn('notificacion_confirmacion_trs', 'no_co-respuesta')) {
+                $payload['no_co-respuesta'] = $respuesta;
+            }
+
+            if (!empty($payload)) {
+                DB::table('notificacion_confirmacion_trs')->insert($payload);
+                $insertedConfirmation = true;
+            }
+        }
+
+        return [
+            'updated' => (int) $updated,
+            'confirmation_inserted' => $insertedConfirmation,
+            'confirmation_notif_id' => $noEnId,
+            'error' => null,
+            'code' => null,
+        ];
     }
 
     private function resolveActivationLevelInfo(string $tenantId, string $activationId): array
