@@ -2777,6 +2777,28 @@ class ActivationController extends Controller
             if ($fallback !== '' && $fallback !== $key) {
                 return $fallback;
             }
+
+            $hardcoded = [
+                'messages.auth.password_reset_email_intro' => [
+                    'es' => 'Recibimos una solicitud para restablecer tu contraseña.',
+                    'ca' => 'Hem rebut una sol·licitud per restablir la teva contrasenya.',
+                    'en' => 'We received a request to reset your password.',
+                ],
+                'messages.auth.password_reset_email_cta' => [
+                    'es' => 'Restablecer contraseña',
+                    'ca' => 'Restablir contrasenya',
+                    'en' => 'Reset password',
+                ],
+                'messages.auth.password_reset_email_ignore' => [
+                    'es' => 'Si no solicitaste este cambio, puedes ignorar este mensaje.',
+                    'ca' => 'Si no has demanat aquest canvi, pots ignorar aquest missatge.',
+                    'en' => 'If you did not request this, you can ignore this message.',
+                ],
+            ];
+
+            if (isset($hardcoded[$key])) {
+                return (string) ($hardcoded[$key][$locale] ?? $hardcoded[$key]['es']);
+            }
         }
         return $text;
     }
