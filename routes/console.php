@@ -315,8 +315,12 @@ Artisan::command('activaciones:auto-delegar {--tenant=} {--dry-run}', function (
                     $detailIdsInPlan[$detailId] = true;
                 }
             }
+            $detailById = [];
+            $roleByDetailId = [];
+            $roleNameById = [];
+            $groupById = [];
+            $personById = [];
             if (!empty($detailIdsInPlan)) {
-                $roleByDetailId = [];
                 $detailRows = DB::table('accion_set_detalle_cfg')
                     ->when(
                         Schema::hasColumn('accion_set_detalle_cfg', 'ac_se_de-tenant_id'),
@@ -327,12 +331,56 @@ Artisan::command('activaciones:auto-delegar {--tenant=} {--dry-run}', function (
                         Schema::hasColumn('accion_set_detalle_cfg', 'ac_se_de-activo'),
                         static fn($q) => $q->whereRaw("UPPER(COALESCE(`ac_se_de-activo`, 'SI')) <> 'NO'"),
                     )
-                    ->get(['ac_se_de-id', 'ac_se_de-rol_id-fk']);
+                    ->get(['ac_se_de-id', 'ac_se_de-rol_id-fk', 'ac_se_de-detalle']);
+                $roleIds = [];
                 foreach ($detailRows as $d) {
                     $detailId = trim((string) ($d->{'ac_se_de-id'} ?? ''));
                     $roleId = trim((string) ($d->{'ac_se_de-rol_id-fk'} ?? ''));
+                    $detailName = trim((string) ($d->{'ac_se_de-detalle'} ?? ''));
                     if ($detailId !== '' && $roleId !== '') {
                         $roleByDetailId[$detailId] = $roleId;
+                        $detailById[$detailId] = [
+                            'name' => $detailName !== '' ? $detailName : 'Acción operativa',
+                            'role_id' => $roleId,
+                            'role_name' => '',
+                        ];
+                        $roleIds[$roleId] = true;
+                    }
+                }
+
+                if (!empty($roleIds) && Schema::hasTable('rol_cat')) {
+                    $roleQuery = DB::table('rol_cat')->whereIn('rol-id', array_keys($roleIds));
+                    if (Schema::hasColumn('rol_cat', 'rol-tenant_id')) {
+                        $roleQuery->where('rol-tenant_id', $tenantId);
+                    }
+                    foreach ($roleQuery->get(['rol-id', 'rol-nombre']) as $rr) {
+                        $rid = trim((string) ($rr->{'rol-id'} ?? ''));
+                        if ($rid === '') continue;
+                        $roleNameById[$rid] = trim((string) ($rr->{'rol-nombre'} ?? ''));
+                    }
+                    foreach ($detailById as $did => $info) {
+                        $rid = (string) ($info['role_id'] ?? '');
+                        $detailById[$did]['role_name'] = $roleNameById[$rid] ?? '';
+                    }
+                }
+
+                $groupIdsInPlan = [];
+                foreach (array_keys($latestExecByKey) as $k) {
+                    [$gid] = explode('|', $k, 2);
+                    $gid = trim((string) $gid);
+                    if ($gid !== '') {
+                        $groupIdsInPlan[$gid] = true;
+                    }
+                }
+                if (!empty($groupIdsInPlan) && Schema::hasTable('grupo_operativo_cat')) {
+                    $gq = DB::table('grupo_operativo_cat')->whereIn('gr_op-id', array_keys($groupIdsInPlan));
+                    if (Schema::hasColumn('grupo_operativo_cat', 'gr_op-tenant_id')) {
+                        $gq->where('gr_op-tenant_id', $tenantId);
+                    }
+                    foreach ($gq->get(['gr_op-id', 'gr_op-nombre']) as $gr) {
+                        $gid = trim((string) ($gr->{'gr_op-id'} ?? ''));
+                        if ($gid === '') continue;
+                        $groupById[$gid] = trim((string) ($gr->{'gr_op-nombre'} ?? '')) ?: $gid;
                     }
                 }
             }
@@ -373,6 +421,45 @@ Artisan::command('activaciones:auto-delegar {--tenant=} {--dry-run}', function (
                 }
                 $assignmentById[$id] = $a;
                 $assignmentByKey[$gid . '|' . $perId . '|' . $tipo] = $id;
+            }
+
+            // Cache de nombres de personas (para auditoría legible).
+            $personIds = [];
+            foreach ($assignmentRows as $a) {
+                $pid = trim((string) ($a->{'as_en_fu-per_id-fk'} ?? ''));
+                if ($pid !== '') $personIds[$pid] = true;
+            }
+            foreach ($titularesByRoleGroup as $rows) {
+                foreach ($rows as $r) {
+                    $pid = trim((string) ($r['per_id'] ?? ''));
+                    if ($pid !== '') $personIds[$pid] = true;
+                }
+            }
+            foreach ($suplentesByRoleGroup as $rows) {
+                foreach ($rows as $r) {
+                    $pid = trim((string) ($r['per_id'] ?? ''));
+                    if ($pid !== '') $personIds[$pid] = true;
+                }
+            }
+            foreach (array_keys($confirmedByPerson) as $pid) {
+                $pid = trim((string) $pid);
+                if ($pid !== '') $personIds[$pid] = true;
+            }
+            if (!empty($personIds) && Schema::hasTable('persona_mst')) {
+                $pq = DB::table('persona_mst')->whereIn('per-id', array_keys($personIds));
+                if (Schema::hasColumn('persona_mst', 'per-tenant_id')) {
+                    $pq->where('per-tenant_id', $tenantId);
+                }
+                foreach ($pq->get(['per-id', 'per-nombre', 'per-apellido_1', 'per-apellido_2']) as $p) {
+                    $pid = trim((string) ($p->{'per-id'} ?? ''));
+                    if ($pid === '') continue;
+                    $label = trim(implode(' ', array_filter([
+                        (string) ($p->{'per-nombre'} ?? ''),
+                        (string) ($p->{'per-apellido_1'} ?? ''),
+                        (string) ($p->{'per-apellido_2'} ?? ''),
+                    ])));
+                    $personById[$pid] = $label !== '' ? $label : $pid;
+                }
             }
 
             foreach ($latestExecByKey as $key => $ej) {
@@ -479,19 +566,19 @@ Artisan::command('activaciones:auto-delegar {--tenant=} {--dry-run}', function (
                         'plan_id' => $activationId,
                         'event_type' => 'delegation_auto',
                         'module' => 'delegations',
-                        'entity_id' => $targetAsigId,
-                        'entity_type' => 'asignacion_en_funciones_trs',
+                        'entity_id' => (string) ($ej->{'ej_ac-id'} ?? $targetAsigId),
+                        'entity_type' => 'ejecucion_accion_trs',
                         'previous_value' => [
-                            'accion_detalle_id' => $detailId,
-                            'grupo_id' => $gid,
-                            'titular_prev_per_id' => $titularId,
-                            'asignacion_prev_id' => $currentAsignId !== '' ? $currentAsignId : null,
+                            'accion_detalle_nombre' => (string) ($detailById[$detailId]['name'] ?? 'Acción operativa'),
+                            'rol_nombre' => (string) ($detailById[$detailId]['role_name'] ?? null),
+                            'grupo_nombre' => (string) ($groupById[$gid] ?? $gid),
+                            'delegado_de_nombre' => (string) ($personById[$titularId] ?? null),
                         ],
                         'new_value' => [
-                            'suplente_new_per_id' => $suplenteId,
-                            'asignacion_id' => $targetAsigId,
-                            'tipo_delegacion' => 'AUTO',
+                            'delegado_a_nombre' => (string) ($personById[$suplenteId] ?? null),
+                            'tipo_asignacion' => 'SUPLENTE',
                             'motivo' => 'Vencimiento tiempo conformación',
+                            'actor' => 'APP',
                         ],
                         'justification' => 'Autodelegación automática backend por vencimiento de confirmación',
                     ]);

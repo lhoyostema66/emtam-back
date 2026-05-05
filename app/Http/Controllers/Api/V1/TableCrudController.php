@@ -2395,6 +2395,24 @@ class TableCrudController extends Controller
                     'new_value' => $after,
                 ];
             }
+
+            // Delegación a nivel de acción: cambia la asignación responsable.
+            $prevAsignacionId = (string) ($before['ej_ac-as_en_fu_id-fk'] ?? '');
+            $nextAsignacionId = (string) ($after['ej_ac-as_en_fu_id-fk'] ?? $prevAsignacionId);
+            if (trim($prevAsignacionId) !== trim($nextAsignacionId)) {
+                $tenantId = (string) ($this->tenantContext->tenantId() ?? '');
+                return [
+                    'event_type' => 'delegation_action',
+                    'module' => 'delegations',
+                    'plan_id' => $planId !== '' ? $planId : null,
+                    'entity_id' => $entityId !== '' ? $entityId : null,
+                    'entity_type' => $table,
+                    'previous_value' => $this->describeDelegationAction($tenantId, $planId, $before, $prevAsignacionId, $nextAsignacionId, 'PREV'),
+                    'new_value' => $this->describeDelegationAction($tenantId, $planId, $after, $prevAsignacionId, $nextAsignacionId, 'NEXT'),
+                    'justification' => 'Delegación de acción (cambio de responsable)',
+                ];
+            }
+
             $prevState = (string) ($before['ej_ac-estado'] ?? '');
             $nextState = (string) ($after['ej_ac-estado'] ?? $prevState);
             if ($prevState !== $nextState) {
@@ -2415,13 +2433,14 @@ class TableCrudController extends Controller
             $planId = (string) ($after['as_en_fu-ac_de_pl_id-fk'] ?? $before['as_en_fu-ac_de_pl_id-fk'] ?? '');
             $entityId = (string) ($after['as_en_fu-id'] ?? $before['as_en_fu-id'] ?? '');
             if ($before === null) {
+                $tenantId = (string) ($this->tenantContext->tenantId() ?? '');
                 return [
                     'event_type' => 'delegation_created',
                     'module' => 'delegations',
                     'plan_id' => $planId !== '' ? $planId : null,
                     'entity_id' => $entityId !== '' ? $entityId : null,
                     'entity_type' => $table,
-                    'new_value' => $after,
+                    'new_value' => $this->describeAssignment($tenantId, $after),
                 ];
             }
             $prevPer = (string) ($before['as_en_fu-per_id-fk'] ?? '');
@@ -2429,20 +2448,178 @@ class TableCrudController extends Controller
             $prevState = (string) ($before['as_en_fu-estado'] ?? '');
             $nextState = (string) ($after['as_en_fu-estado'] ?? $prevState);
             if ($prevPer !== $nextPer || $prevState !== $nextState) {
+                $tenantId = (string) ($this->tenantContext->tenantId() ?? '');
                 return [
                     'event_type' => 'delegation_updated',
                     'module' => 'delegations',
                     'plan_id' => $planId !== '' ? $planId : null,
                     'entity_id' => $entityId !== '' ? $entityId : null,
                     'entity_type' => $table,
-                    'previous_value' => ['per_id' => $prevPer, 'estado' => $prevState],
-                    'new_value' => ['per_id' => $nextPer, 'estado' => $nextState],
+                    'previous_value' => $this->describeAssignment($tenantId, $before),
+                    'new_value' => $this->describeAssignment($tenantId, $after),
                 ];
             }
             return null;
         }
 
         return null;
+    }
+
+    private function describeAssignment(string $tenantId, array $row): array
+    {
+        $perId = trim((string) ($row['as_en_fu-per_id-fk'] ?? ''));
+        $delegadorId = trim((string) ($row['as_en_fu-per_id-fk-delegador'] ?? ''));
+        $grupoId = trim((string) ($row['as_en_fu-gr_op_id-fk'] ?? ''));
+        $tipo = trim((string) ($row['as_en_fu-tipo_asignacion'] ?? ''));
+        $estado = trim((string) ($row['as_en_fu-estado'] ?? ''));
+        $motivo = trim((string) ($row['as_en_fu-motivo'] ?? ''));
+
+        $persona = $this->fetchPersonaLabel($tenantId, $perId);
+        $delegador = $this->fetchPersonaLabel($tenantId, $delegadorId);
+        $grupoNombre = $this->fetchGroupName($tenantId, $grupoId);
+
+        return array_filter([
+            'grupo_nombre' => $grupoNombre !== '' ? $grupoNombre : null,
+            'persona_nombre' => $persona['nombre'] ?? null,
+            'persona_email' => $persona['email'] ?? null,
+            'delegado_por_nombre' => $delegador['nombre'] ?? null,
+            'delegado_por_email' => $delegador['email'] ?? null,
+            'tipo_asignacion' => $tipo !== '' ? $tipo : null,
+            'estado' => $estado !== '' ? $estado : null,
+            'motivo' => $motivo !== '' ? $motivo : null,
+        ], static fn ($v) => $v !== null && $v !== '');
+    }
+
+    private function describeDelegationAction(
+        string $tenantId,
+        string $planId,
+        array $row,
+        string $prevAsignacionId,
+        string $nextAsignacionId,
+        string $side
+    ): array {
+        $grupoId = trim((string) ($row['ej_ac-gr_op_id-fk'] ?? ''));
+        $grupoNombre = $this->fetchGroupName($tenantId, $grupoId);
+
+        $detalleId = trim((string) ($row['ej_ac-ac_se_de_id-fk'] ?? ''));
+        $actionInfo = $this->fetchActionInfo($tenantId, $detalleId);
+
+        $prevAsign = $this->fetchAssignmentPerson($tenantId, trim($prevAsignacionId));
+        $nextAsign = $this->fetchAssignmentPerson($tenantId, trim($nextAsignacionId));
+
+        $fromPersona = $this->fetchPersonaLabel($tenantId, $prevAsign['per_id'] ?? '');
+        $toPersona = $this->fetchPersonaLabel($tenantId, $nextAsign['per_id'] ?? '');
+
+        $value = [
+            'accion_detalle_nombre' => $actionInfo['accion_nombre'] ?? null,
+            'rol_nombre' => $actionInfo['rol_nombre'] ?? null,
+            'grupo_nombre' => $grupoNombre !== '' ? $grupoNombre : null,
+            'delegado_de_nombre' => $fromPersona['nombre'] ?? null,
+            'delegado_a_nombre' => $toPersona['nombre'] ?? null,
+            'delegado_a_email' => $toPersona['email'] ?? null,
+            'tipo_asignacion' => ($nextAsign['tipo_asignacion'] ?? '') !== '' ? $nextAsign['tipo_asignacion'] : null,
+            'motivo' => ($nextAsign['motivo'] ?? '') !== '' ? $nextAsign['motivo'] : null,
+        ];
+
+        // Evitar guardar ids/códigos técnicos; se filtran nulls/vacíos.
+        return array_filter($value, static fn ($v) => $v !== null && $v !== '');
+    }
+
+    private function fetchAssignmentPerson(string $tenantId, string $asignacionId): array
+    {
+        if ($asignacionId === '' || ! Schema::hasTable('asignacion_en_funciones_trs')) {
+            return [];
+        }
+
+        $q = DB::table('asignacion_en_funciones_trs')->where('as_en_fu-id', $asignacionId);
+        if (Schema::hasColumn('asignacion_en_funciones_trs', 'as_en_fu-tenant_id') && $tenantId !== '') {
+            $q->where('as_en_fu-tenant_id', $tenantId);
+        }
+        $row = $q->first(['as_en_fu-per_id-fk', 'as_en_fu-tipo_asignacion', 'as_en_fu-motivo']);
+        if (! $row) {
+            return [];
+        }
+
+        return [
+            'per_id' => trim((string) ($row->{'as_en_fu-per_id-fk'} ?? '')),
+            'tipo_asignacion' => trim((string) ($row->{'as_en_fu-tipo_asignacion'} ?? '')),
+            'motivo' => trim((string) ($row->{'as_en_fu-motivo'} ?? '')),
+        ];
+    }
+
+    private function fetchPersonaLabel(string $tenantId, string $perId): array
+    {
+        if ($perId === '' || ! Schema::hasTable('persona_mst')) {
+            return [];
+        }
+
+        $q = DB::table('persona_mst')->where('per-id', $perId);
+        if (Schema::hasColumn('persona_mst', 'per-tenant_id') && $tenantId !== '') {
+            $q->where('per-tenant_id', $tenantId);
+        }
+        $row = $q->first(['per-nombre', 'per-apellido_1', 'per-apellido_2', 'per-email']);
+        if (! $row) {
+            return [];
+        }
+
+        $nombre = trim(implode(' ', array_filter([
+            (string) ($row->{'per-nombre'} ?? ''),
+            (string) ($row->{'per-apellido_1'} ?? ''),
+            (string) ($row->{'per-apellido_2'} ?? ''),
+        ])));
+        $email = trim((string) ($row->{'per-email'} ?? ''));
+
+        return array_filter([
+            'nombre' => $nombre !== '' ? $nombre : null,
+            'email' => $email !== '' ? $email : null,
+        ], static fn ($v) => $v !== null && $v !== '');
+    }
+
+    private function fetchGroupName(string $tenantId, string $grupoId): string
+    {
+        if ($grupoId === '' || ! Schema::hasTable('grupo_operativo_cat')) {
+            return '';
+        }
+
+        $q = DB::table('grupo_operativo_cat')->where('gr_op-id', $grupoId);
+        if (Schema::hasColumn('grupo_operativo_cat', 'gr_op-tenant_id') && $tenantId !== '') {
+            $q->where('gr_op-tenant_id', $tenantId);
+        }
+        $name = trim((string) ($q->value('gr_op-nombre') ?? ''));
+
+        return $name;
+    }
+
+    private function fetchActionInfo(string $tenantId, string $detalleId): array
+    {
+        if ($detalleId === '' || ! Schema::hasTable('accion_set_detalle_cfg')) {
+            return [];
+        }
+
+        $q = DB::table('accion_set_detalle_cfg')->where('ac_se_de-id', $detalleId);
+        if (Schema::hasColumn('accion_set_detalle_cfg', 'ac_se_de-tenant_id') && $tenantId !== '') {
+            $q->where('ac_se_de-tenant_id', $tenantId);
+        }
+        $row = $q->first(['ac_se_de-detalle', 'ac_se_de-rol_id-fk']);
+        if (! $row) {
+            return [];
+        }
+
+        $accionNombre = trim((string) ($row->{'ac_se_de-detalle'} ?? ''));
+        $rolId = trim((string) ($row->{'ac_se_de-rol_id-fk'} ?? ''));
+        $rolNombre = '';
+        if ($rolId !== '' && Schema::hasTable('rol_cat')) {
+            $rq = DB::table('rol_cat')->where('rol-id', $rolId);
+            if (Schema::hasColumn('rol_cat', 'rol-tenant_id') && $tenantId !== '') {
+                $rq->where('rol-tenant_id', $tenantId);
+            }
+            $rolNombre = trim((string) ($rq->value('rol-nombre') ?? ''));
+        }
+
+        return array_filter([
+            'accion_nombre' => $accionNombre !== '' ? $accionNombre : null,
+            'rol_nombre' => $rolNombre !== '' ? $rolNombre : null,
+        ], static fn ($v) => $v !== null && $v !== '');
     }
 
     private function applyTenantScope(Builder $query, ?string $tenantColumn): void

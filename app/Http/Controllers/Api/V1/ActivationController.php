@@ -2629,11 +2629,40 @@ class ActivationController extends Controller
             }
         }
 
-        $subject = 'Cambio de titularidad' . ($groupName !== '' ? ' — ' . $groupName : '');
+        $subject = 'Delegación de acciones del plan' . ($groupName !== '' ? ' — ' . $groupName : '');
         $activationDateTimeLabel = $this->resolveActivationDateTimeLabel($tenantId, $activationId);
-        $text = "Se confirma que ahora eres titular del grupo operativo.\n"
-            . ($personLabel !== '' ? "Nuevo titular: {$personLabel}\n" : '')
+        $delegatedActionNames = [];
+        if (
+            Schema::hasTable('ejecucion_accion_trs')
+            && Schema::hasTable('asignacion_en_funciones_trs')
+            && Schema::hasTable('accion_set_detalle_cfg')
+        ) {
+            $actionsQuery = DB::table('ejecucion_accion_trs as ej')
+                ->join('asignacion_en_funciones_trs as asg', 'asg.as_en_fu-id', '=', 'ej.ej_ac-as_en_fu_id-fk')
+                ->join('accion_set_detalle_cfg as de', 'de.ac_se_de-id', '=', 'ej.ej_ac-ac_se_de_id-fk')
+                ->where('ej.ej_ac-tenant_id', $tenantId)
+                ->where('ej.ej_ac-ac_de_pl_id-fk', $activationId)
+                ->where('asg.as_en_fu-per_id-fk', $perId);
+            if ($grupoId !== '') {
+                $actionsQuery->where('ej.ej_ac-gr_op_id-fk', $grupoId);
+            }
+            $delegatedActionNames = $actionsQuery
+                ->orderBy('de.ac_se_de-ord_ejec')
+                ->orderBy('de.ac_se_de-id')
+                ->pluck('de.ac_se_de-detalle')
+                ->map(static fn ($v) => trim((string) $v))
+                ->filter(static fn ($v) => $v !== '')
+                ->unique()
+                ->values()
+                ->all();
+        }
+
+        $text = "Se te acaban de delegar acciones del plan activo.\n"
+            . ($personLabel !== '' ? "Persona delegada: {$personLabel}\n" : '')
             . ($groupName !== '' ? "Grupo operativo: {$groupName}\n" : '')
+            . (!empty($delegatedActionNames)
+                ? "Acciones delegadas:\n- " . implode("\n- ", $delegatedActionNames) . "\n"
+                : "Acciones delegadas: según configuración vigente del plan.\n")
             . "Fecha/hora de activación: {$activationDateTimeLabel}\n"
             . 'Accede a la aplicación: https://emta.grupo-tema.com/';
         $bodyHtml = $this->renderNotificationHtml($text);
@@ -3371,9 +3400,38 @@ class ActivationController extends Controller
             }
         }
 
+        $riskLabel = '';
+        $levelLabel = '';
+        $riskId = trim((string) ($activationRow?->{'ac_de_pl-rie_id-fk'} ?? ''));
+        $levelId = trim((string) ($activationRow?->{'ac_de_pl-ni_al_id-fk-inicial'} ?? ''));
+        if ($riskId !== '' && Schema::hasTable('riesgo_cat')) {
+            $riskLabel = trim((string) DB::table('riesgo_cat')
+                ->when(
+                    Schema::hasColumn('riesgo_cat', 'rie-tenant_id'),
+                    static fn($q) => $q->where('rie-tenant_id', $tenantId),
+                )
+                ->where('rie-id', $riskId)
+                ->value('rie-nombre'));
+        }
+        if ($levelId !== '' && Schema::hasTable('nivel_alerta_cat')) {
+            $levelLabel = trim((string) DB::table('nivel_alerta_cat')
+                ->when(
+                    Schema::hasColumn('nivel_alerta_cat', 'ni_al-tenant_id'),
+                    static fn($q) => $q->where('ni_al-tenant_id', $tenantId),
+                )
+                ->where('ni_al-id', $levelId)
+                ->value('ni_al-nombre'));
+        }
+
         $label = $isSimulacro ? 'simulacro' : 'emergencia';
         $prefix = $isSimulacro ? '[SIMULACRO] ' : '';
-        $subject = $subjectPrefix . $prefix . 'Fin de ' . $label . ' — ' . $activationId;
+        $subject = $subjectPrefix . $prefix . 'Fin de ' . $label;
+        if ($riskLabel !== '') {
+            $subject .= ' — ' . $riskLabel;
+        }
+        if ($levelLabel !== '') {
+            $subject .= ' — ' . $levelLabel;
+        }
         $detalle = trim((string) ($validated['detalle'] ?? ''));
 
         $index = [
@@ -3398,6 +3456,12 @@ class ActivationController extends Controller
             }
             $lines[] = 'AVISO: Fin de ' . $label;
             $lines[] = 'FECHA/HORA: ' . $this->tenantNowDateTime($tenantId);
+            if ($riskLabel !== '') {
+                $lines[] = 'RIESGO: ' . $riskLabel;
+            }
+            if ($levelLabel !== '') {
+                $lines[] = 'NIVEL DE ALERTA: ' . $levelLabel;
+            }
             $lines[] = 'PERSONA: ' . (string) ($p['nombre'] ?? $p['per_id']);
             $lines[] = 'EMAIL: ' . ($to !== '' ? $to : '—');
             if ($detalle !== '') {
@@ -4133,6 +4197,15 @@ class ActivationController extends Controller
             }
         }
 
+        $grupoNombre = null;
+        if ($grupoId !== '' && Schema::hasTable('grupo_operativo_cat')) {
+            $groupQuery = DB::table('grupo_operativo_cat')->where('gr_op-id', $grupoId);
+            if (Schema::hasColumn('grupo_operativo_cat', 'gr_op-tenant_id')) {
+                $groupQuery->where('gr_op-tenant_id', $tenantId);
+            }
+            $grupoNombre = trim((string) ($groupQuery->value('gr_op-nombre') ?? '')) ?: null;
+        }
+
         $suplenteNewNombre = null;
         if (Schema::hasTable('persona_mst')) {
             $personaNew = DB::table('persona_mst')
@@ -4151,6 +4224,24 @@ class ActivationController extends Controller
             }
         }
 
+        $titularPrevNombre = null;
+        if ($titularPrev !== '' && Schema::hasTable('persona_mst')) {
+            $personaPrev = DB::table('persona_mst')
+                ->where('per-id', $titularPrev)
+                ->when(
+                    Schema::hasColumn('persona_mst', 'per-tenant_id'),
+                    static fn($q) => $q->where('per-tenant_id', $tenantId),
+                )
+                ->first(['per-nombre', 'per-apellido_1', 'per-apellido_2']);
+            if ($personaPrev) {
+                $titularPrevNombre = trim(implode(' ', array_filter([
+                    (string) ($personaPrev->{'per-nombre'} ?? ''),
+                    (string) ($personaPrev->{'per-apellido_1'} ?? ''),
+                    (string) ($personaPrev->{'per-apellido_2'} ?? ''),
+                ])));
+            }
+        }
+
         $this->auditLogger->log([
             'tenant_id' => $tenantId,
             'user_id' => null,
@@ -4161,19 +4252,14 @@ class ActivationController extends Controller
             'entity_id' => $asignacionId !== '' ? $asignacionId : null,
             'entity_type' => 'asignacion_en_funciones_trs',
             'previous_value' => [
-                'accion_detalle_id' => $accionDetalleId,
-                'grupo_id' => $grupoId,
-                'titular_prev_per_id' => $titularPrev !== '' ? $titularPrev : null,
-                'asignacion_prev_id' => $asignacionPrevId !== '' ? $asignacionPrevId : null,
+                'accion_detalle_nombre' => !empty($actionNames) ? implode(', ', $actionNames) : null,
+                'rol_nombre' => isset($roleIds[0]) ? ($roleNamesById[$roleIds[0]] ?? null) : null,
+                'grupo_nombre' => $grupoNombre,
+                'delegado_de_nombre' => $titularPrevNombre,
             ],
             'new_value' => [
-                'suplente_new_per_id' => $suplenteNew,
-                'suplente_new_nombre' => $suplenteNewNombre,
-                'asignacion_id' => $asignacionId !== '' ? $asignacionId : null,
-                'accion_detalle_ids' => !empty($accionDetalleIds) ? $accionDetalleIds : null,
-                'accion_detalle_nombre' => !empty($actionNames) ? implode(', ', $actionNames) : null,
-                'rol_id' => $roleIds[0] ?? null,
-                'rol_nombre' => isset($roleIds[0]) ? ($roleNamesById[$roleIds[0]] ?? $roleIds[0]) : null,
+                'delegado_a_nombre' => $suplenteNewNombre,
+                'tipo_asignacion' => 'SUPLENTE',
                 'actor' => 'APP',
                 'tipo_delegacion' => 'AUTO',
                 'motivo' => $motivo !== '' ? $motivo : 'Vencimiento tiempo conformación',
@@ -4969,6 +5055,29 @@ class ActivationController extends Controller
                     'ac_de_pl-estado' => 'FINALIZADA',
                 ]);
 
+            $riesgoLabel = null;
+            $nivelLabel = null;
+            $riesgoId = trim((string) ($activation->{'ac_de_pl-rie_id-fk'} ?? ''));
+            $nivelId = trim((string) ($activation->{'ac_de_pl-ni_al_id-fk-inicial'} ?? ''));
+            if ($riesgoId !== '' && Schema::hasTable('riesgo_cat')) {
+                $riesgoLabel = trim((string) DB::table('riesgo_cat')
+                    ->when(
+                        Schema::hasColumn('riesgo_cat', 'rie-tenant_id'),
+                        static fn($q) => $q->where('rie-tenant_id', $tenantId),
+                    )
+                    ->where('rie-id', $riesgoId)
+                    ->value('rie-nombre'));
+            }
+            if ($nivelId !== '' && Schema::hasTable('nivel_alerta_cat')) {
+                $nivelLabel = trim((string) DB::table('nivel_alerta_cat')
+                    ->when(
+                        Schema::hasColumn('nivel_alerta_cat', 'ni_al-tenant_id'),
+                        static fn($q) => $q->where('ni_al-tenant_id', $tenantId),
+                    )
+                    ->where('ni_al-id', $nivelId)
+                    ->value('ni_al-nombre'));
+            }
+
             $this->auditLogger->logFromRequest($request, [
                 'event_type' => 'plan_status_changed',
                 'module' => 'activation',
@@ -4977,9 +5086,13 @@ class ActivationController extends Controller
                 'entity_type' => 'activacion_del_plan_trs',
                 'previous_value' => [
                     'estado' => $activation->{'ac_de_pl-estado'} ?? null,
+                    'riesgo_nombre' => $riesgoLabel !== '' ? $riesgoLabel : null,
+                    'nivel_alerta_nombre' => $nivelLabel !== '' ? $nivelLabel : null,
                 ],
                 'new_value' => [
                     'estado' => 'FINALIZADA',
+                    'riesgo_nombre' => $riesgoLabel !== '' ? $riesgoLabel : null,
+                    'nivel_alerta_nombre' => $nivelLabel !== '' ? $nivelLabel : null,
                 ],
                 'justification' => 'Finalización del plan',
             ]);
@@ -5739,9 +5852,6 @@ class ActivationController extends Controller
                     ->where('tenant_id', $tenantId)
                     ->where('activation_id', $activationId)
                     ->where('user_id', $user->id)
-                    ->where(function ($q) use ($tenantId) {
-                        $q->whereNull('expires_at')->orWhere('expires_at', '>=', $this->tenantNowDateTime($tenantId));
-                    })
                     ->exists();
             }
 
@@ -6084,12 +6194,8 @@ class ActivationController extends Controller
             return response()->json(['message' => 'User not found.'], 404);
         }
 
-        $expiresAt = $data['expires_at'] ?? null;
-        if ($expiresAt === null) {
-            $expiresAt = now()->addDay()->toDateTimeString();
-        } else {
-            $expiresAt = Carbon::parse($expiresAt)->toDateTimeString();
-        }
+        // Regla de negocio: el acceso al panel no caduca durante la emergencia.
+        $expiresAt = null;
 
         DB::table('control_panel_access_trs')->updateOrInsert(
             [
@@ -6151,9 +6257,9 @@ class ActivationController extends Controller
             'en' => "You have been granted control panel access. Risk: {$riskLabel}. Level: {$levelLabel}.",
         ];
         $line2ByLang = [
-            'es' => "Vence: {$expiresAt}",
-            'ca' => "Caduca: {$expiresAt}",
-            'en' => "Expires: {$expiresAt}",
+            'es' => 'Acceso vigente hasta cierre de la emergencia.',
+            'ca' => "Accés vigent fins al tancament de l'emergència.",
+            'en' => 'Access remains active until the emergency is closed.',
         ];
         $line3ByLang = [
             'es' => 'Inicia sesión para acceder al panel.',
@@ -6218,7 +6324,7 @@ class ActivationController extends Controller
 
             if ($row) {
                 $expiresAt = $row->expires_at;
-                $allowed = $row->expires_at === null || $row->expires_at >= $this->tenantNowDateTime($tenantId);
+                $allowed = true;
             }
         }
 
@@ -6506,6 +6612,32 @@ class ActivationController extends Controller
 
         if (!Storage::disk('local')->exists($path)) {
             return response()->json(['message' => 'File not found.'], 404);
+        }
+
+        $activationId = trim((string) $request->query('activation_id', ''));
+        if ($activationId !== '') {
+            $riskName = '';
+            if (Schema::hasTable('riesgo_cat')) {
+                $riskName = trim((string) DB::table('riesgo_cat')
+                    ->when(
+                        Schema::hasColumn('riesgo_cat', 'rie-tenant_id'),
+                        static fn($q) => $q->where('rie-tenant_id', $tenantId),
+                    )
+                    ->where('rie-id', $riesgoId)
+                    ->value('rie-nombre'));
+            }
+            $this->auditLogger->logFromRequest($request, [
+                'event_type' => 'document_downloaded',
+                'module' => 'documents',
+                'plan_id' => $activationId,
+                'entity_id' => $filename,
+                'entity_type' => 'risk_repository_file',
+                'new_value' => [
+                    'document_name' => $filename,
+                    'riesgo_nombre' => $riskName !== '' ? $riskName : null,
+                    'source' => 'FILE',
+                ],
+            ]);
         }
 
         return response()->streamDownload(

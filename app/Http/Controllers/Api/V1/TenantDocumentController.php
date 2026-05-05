@@ -845,6 +845,21 @@ class TenantDocumentController extends Controller
             abort(404, 'Document not found.');
         }
 
+        $activationId = trim((string) $request->query('activation_id', ''));
+        if ($activationId !== '') {
+            $this->auditLogger->logFromRequest($request, [
+                'event_type' => 'document_downloaded',
+                'module' => 'documents',
+                'plan_id' => $activationId,
+                'entity_id' => (string) $documentId,
+                'entity_type' => 'tenant_document',
+                'new_value' => [
+                    'document_name' => trim((string) ($doc->name ?? $doc->original_name ?? 'Documento')),
+                    'source' => 'FILE',
+                ],
+            ]);
+        }
+
         $path = (string) ($doc->path ?? '');
         $filename = trim((string) ($doc->original_name ?? ''));
         if ($filename === '') {
