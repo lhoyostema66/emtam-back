@@ -4244,7 +4244,7 @@ class ActivationController extends Controller
 
         $this->auditLogger->log([
             'tenant_id' => $tenantId,
-            'user_id' => null,
+            'user_id' => $request->user()?->id,
             'ip_origin' => $request->ip(),
             'event_type' => 'delegation_auto',
             'module' => 'delegations',

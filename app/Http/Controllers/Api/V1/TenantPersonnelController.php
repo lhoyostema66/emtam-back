@@ -62,9 +62,10 @@ class TenantPersonnelController extends Controller
 
         $personIds = $rows->pluck('per-id')->filter()->map(static fn ($v) => trim((string) $v))->values()->all();
         $rolesByPerson = $this->rolesByPerson($tenantId, $personIds);
+        $assignmentsByPerson = $this->roleGroupAssignmentsByPerson($tenantId, $personIds);
         $linkedUsersByPerson = $this->linkedUsersByPerson($tenantId, $personIds);
 
-        $mapped = $rows->map(function ($row) use ($rolesByPerson, $linkedUsersByPerson) {
+        $mapped = $rows->map(function ($row) use ($rolesByPerson, $assignmentsByPerson, $linkedUsersByPerson) {
             $personId = trim((string) ($row->{'per-id'} ?? ''));
             $firstName = trim((string) ($row->{'per-nombre'} ?? ''));
             $lastName1 = trim((string) ($row->{'per-apellido_1'} ?? ''));
@@ -84,6 +85,7 @@ class TenantPersonnelController extends Controller
                 'telefono' => trim((string) ($row->{'per-tel_mov'} ?? '')),
                 'estado' => $active ? 'ACTIVO' : 'INACTIVO',
                 'cargo' => $rolesByPerson[$personId] ?? null,
+                'asignaciones_operativas' => $assignmentsByPerson[$personId] ?? [],
                 'has_user' => $linked !== null,
                 'has_active_user' => (bool) ($linked['is_active'] ?? false),
                 'linked_user' => $linked,
@@ -412,6 +414,84 @@ class TenantPersonnelController extends Controller
                 'name' => trim((string) ($row->name ?? '')),
                 'email' => trim((string) ($row->email ?? '')),
                 'is_active' => $hasIsActive ? (bool) ($row->is_active ?? false) : true,
+            ];
+        }
+
+        return $out;
+    }
+
+    private function roleGroupAssignmentsByPerson(string $tenantId, array $personIds): array
+    {
+        if (
+            $personIds === []
+            || ! Schema::hasTable('persona_rol_grupo_cfg')
+            || ! Schema::hasTable('rol_cat')
+            || ! Schema::hasTable('grupo_operativo_cat')
+        ) {
+            return [];
+        }
+
+        $query = DB::table('persona_rol_grupo_cfg as prg')
+            ->leftJoin('rol_cat as r', 'r.rol-id', '=', 'prg.pe_ro_gr-rol_id-fk')
+            ->leftJoin('grupo_operativo_cat as g', 'g.gr_op-id', '=', 'prg.pe_ro_gr-gr_op_id-fk')
+            ->whereIn('prg.pe_ro_gr-per_id-fk', $personIds);
+
+        if (Schema::hasColumn('persona_rol_grupo_cfg', 'pe_ro_gr-tenant_id')) {
+            $query->where('prg.pe_ro_gr-tenant_id', $tenantId);
+        }
+        if (Schema::hasColumn('persona_rol_grupo_cfg', 'pe_ro_gr-activo')) {
+            $query->whereRaw("UPPER(TRIM(COALESCE(prg.`pe_ro_gr-activo`, 'SI'))) NOT IN ('NO','N','0','FALSE')");
+        }
+        if (Schema::hasColumn('persona_rol_grupo_cfg', 'pe_ro_gr-fech_fin')) {
+            $query->where(static function ($q) {
+                $q->whereNull('prg.pe_ro_gr-fech_fin')->orWhere('prg.pe_ro_gr-fech_fin', '=', '');
+            });
+        }
+
+        $rows = $query
+            ->orderBy('prg.pe_ro_gr-per_id-fk')
+            ->orderBy('g.gr_op-nombre')
+            ->orderBy('r.rol-nombre')
+            ->get([
+                'prg.pe_ro_gr-per_id-fk as person_id',
+                'prg.pe_ro_gr-rol_id-fk as role_id',
+                'prg.pe_ro_gr-gr_op_id-fk as group_id',
+                'prg.pe_ro_gr-tipo_asignacion as assignment_type',
+                'r.rol-nombre as role_name',
+                'g.gr_op-nombre as group_name',
+            ]);
+
+        $out = [];
+        $seen = [];
+        foreach ($rows as $row) {
+            $personId = trim((string) ($row->person_id ?? ''));
+            if ($personId === '') {
+                continue;
+            }
+            $roleId = trim((string) ($row->role_id ?? ''));
+            $groupId = trim((string) ($row->group_id ?? ''));
+            $roleName = trim((string) ($row->role_name ?? $roleId));
+            $groupName = trim((string) ($row->group_name ?? $groupId));
+            $assignmentType = strtoupper(trim((string) ($row->assignment_type ?? 'SUPLENTE')));
+            if (! in_array($assignmentType, ['TITULAR', 'SUPLENTE', 'LIDER'], true)) {
+                $assignmentType = 'SUPLENTE';
+            }
+
+            $key = implode('|', [$personId, $roleId, $groupId, $assignmentType]);
+            if (isset($seen[$key])) {
+                continue;
+            }
+            $seen[$key] = true;
+
+            if (! isset($out[$personId])) {
+                $out[$personId] = [];
+            }
+            $out[$personId][] = [
+                'rol_id' => $roleId,
+                'rol_nombre' => $roleName,
+                'grupo_id' => $groupId,
+                'grupo_nombre' => $groupName,
+                'tipo_asignacion' => $assignmentType,
             ];
         }
 
