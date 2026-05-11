@@ -35,6 +35,7 @@ class RestrictAuditor
                 'api/v1/tenant/users',
                 'api/v1/tenant/personnel',
                 'api/v1/tenant/documents',
+                'api/v1/tenant/import',
                 'api/v1/user/password',
                 'api/v1/user/language',
                 'api/v1/tenant/languages',

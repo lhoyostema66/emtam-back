@@ -5,6 +5,7 @@ use App\Http\Controllers\Api\V1\AuditController;
 use App\Http\Controllers\Api\V1\AuthController;
 use App\Http\Controllers\Api\V1\TableCrudController;
 use App\Http\Controllers\Api\V1\TenantDocumentController;
+use App\Http\Controllers\Api\V1\TenantBulkImportController;
 use App\Http\Controllers\Api\V1\TenantLanguageController;
 use App\Http\Controllers\Api\V1\TenantPersonnelController;
 use App\Http\Controllers\Api\V1\TenantSettingsController;
@@ -92,6 +93,11 @@ Route::prefix('v1')->group(function () {
         Route::get('tenant/documents/{documentId}/download', [TenantDocumentController::class, 'downloadDocument']);
         Route::put('tenant/documents/links/{linkId}', [TenantDocumentController::class, 'updateLink']);
         Route::delete('tenant/documents/links/{linkId}', [TenantDocumentController::class, 'deleteLink']);
+
+        Route::get('tenant/import/mappings', [TenantBulkImportController::class, 'mappings']);
+        Route::post('tenant/import/mappings/sync', [TenantBulkImportController::class, 'syncDefaultMappings']);
+        Route::post('tenant/import/mappings/upsert', [TenantBulkImportController::class, 'upsertMapping']);
+        Route::post('tenant/import/run', [TenantBulkImportController::class, 'import']);
 
         Route::get('audit', [AuditController::class, 'index']);
         Route::get('audit/filters', [AuditController::class, 'filters']);
