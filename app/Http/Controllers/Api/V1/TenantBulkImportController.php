@@ -36,7 +36,8 @@ class TenantBulkImportController extends Controller
             ->orderBy('file_name')
             ->get();
 
-        $csvFiles = $this->csvFolderFiles();
+        $csvFolder = $this->resolveCsvFolder($tenantId);
+        $csvFiles = $this->csvFolderFiles($tenantId);
         $filesByLower = [];
         foreach ($csvFiles as $f) {
             $filesByLower[strtolower($f)] = true;
@@ -59,6 +60,12 @@ class TenantBulkImportController extends Controller
         return response()->json([
             'data' => $mapped,
             'csv_folder_files' => $csvFiles,
+            'csv_folder' => [
+                'tenant_id' => $tenantId,
+                'folder_name' => $csvFolder['folder_name'],
+                'relative_path' => $csvFolder['relative_path'],
+                'uses_root' => $csvFolder['uses_root'],
+            ],
         ]);
     }
 
@@ -81,7 +88,7 @@ class TenantBulkImportController extends Controller
         $maxOrder = (int) DB::table('bulk_import_file_map_cfg')->max('upload_order');
         $added = 0;
         $updated = 0;
-        foreach ($this->csvFolderFiles() as $fileName) {
+        foreach ($this->csvFolderFiles($tenantId) as $fileName) {
             $default = $knownByLower[strtolower($fileName)] ?? null;
             $destination = $default['destination_table'] ?? $this->inferDestinationTable($fileName);
             if (! is_string($destination) || trim($destination) === '') {
@@ -265,6 +272,7 @@ class TenantBulkImportController extends Controller
                 }
 
                 $columns = Schema::getColumnListing($table);
+                $tenantColumn = $this->tenantColumn($columns);
                 $columnByLower = [];
                 foreach ($columns as $col) {
                     $columnByLower[strtolower($col)] = $col;
@@ -293,7 +301,8 @@ class TenantBulkImportController extends Controller
                 $inserted = 0;
                 $skipped = 0;
                 $batch = [];
-                foreach ($rows as $r) {
+                foreach ($rows as $index => $r) {
+                    $rowNumber = $index + 2;
                     $payload = [];
                     foreach ($columnMap as $sourceCol => $destCol) {
                         $raw = $r[$sourceCol] ?? null;
@@ -305,6 +314,13 @@ class TenantBulkImportController extends Controller
                     if ($payload === []) {
                         $skipped++;
                         continue;
+                    }
+                    if ($tenantColumn !== null) {
+                        $incomingTenant = trim((string) ($payload[$tenantColumn] ?? ''));
+                        if ($incomingTenant !== '' && ! $this->sameTenantValue($incomingTenant, $tenantId)) {
+                            throw new \RuntimeException("Tenant incompatible en fila {$rowNumber}. Se esperaba [{$tenantId}] y llegó [{$incomingTenant}].");
+                        }
+                        $payload[$tenantColumn] = $tenantId;
                     }
                     $batch[] = $payload;
                     if (count($batch) >= 500) {
@@ -357,9 +373,10 @@ class TenantBulkImportController extends Controller
         ]);
     }
 
-    private function csvFolderFiles(): array
+    private function csvFolderFiles(?string $tenantId = null): array
     {
-        $path = base_path('..'.DIRECTORY_SEPARATOR.'CSV');
+        $context = $this->resolveCsvFolder($tenantId);
+        $path = $context['path'];
         if (! is_dir($path)) {
             return [];
         }
@@ -384,6 +401,120 @@ class TenantBulkImportController extends Controller
         natcasesort($files);
 
         return array_values($files);
+    }
+
+    /** @return array{path:string,folder_name:?string,relative_path:string,uses_root:bool} */
+    private function resolveCsvFolder(?string $tenantId = null): array
+    {
+        $basePath = base_path('..'.DIRECTORY_SEPARATOR.'CSV');
+        $tenantId = trim((string) ($tenantId ?? $this->tenantContext->tenantId() ?? ''));
+
+        if ($tenantId !== '') {
+            foreach ($this->tenantFolderCandidates($tenantId) as $candidate) {
+                $candidatePath = $basePath.DIRECTORY_SEPARATOR.$candidate;
+                if (is_dir($candidatePath)) {
+                    return [
+                        'path' => $candidatePath,
+                        'folder_name' => $candidate,
+                        'relative_path' => 'CSV/'.$candidate,
+                        'uses_root' => false,
+                    ];
+                }
+            }
+        }
+
+        return [
+            'path' => $basePath,
+            'folder_name' => null,
+            'relative_path' => 'CSV',
+            'uses_root' => true,
+        ];
+    }
+
+    /** @return array<int, string> */
+    private function tenantFolderCandidates(string $tenantId): array
+    {
+        $tenantId = trim($tenantId);
+        if ($tenantId === '') {
+            return [];
+        }
+
+        $slug = $this->normalizeTenantFolderSegment($tenantId);
+        $compact = str_replace('-', '', $slug);
+        $candidates = [
+            $tenantId,
+            str_replace('-', ' ', $slug),
+            $slug,
+            str_replace('-', '_', $slug),
+        ];
+
+        $aliases = [
+            'morell' => ['El-Morell', 'El Morell', 'Morell'],
+            'elmorell' => ['El-Morell', 'El Morell', 'Morell'],
+            'lapoblademafumet' => ['La-Pobla-de-Mafumet', 'La Pobla de Mafumet', 'Pobla-de-Mafumet'],
+            'constanti' => ['Constanti', 'Constanti', 'Constanti'],
+        ];
+
+        foreach ($aliases[$compact] ?? [] as $alias) {
+            $candidates[] = $alias;
+        }
+
+        $unique = [];
+        $seen = [];
+        foreach ($candidates as $candidate) {
+            $candidate = trim((string) $candidate);
+            if ($candidate === '') {
+                continue;
+            }
+            $key = strtolower($candidate);
+            if (isset($seen[$key])) {
+                continue;
+            }
+            $seen[$key] = true;
+            $unique[] = $candidate;
+        }
+
+        return $unique;
+    }
+
+    private function normalizeTenantFolderSegment(string $value): string
+    {
+        $value = trim($value);
+        if ($value === '') {
+            return '';
+        }
+        if (function_exists('iconv')) {
+            $converted = @iconv('UTF-8', 'ASCII//TRANSLIT//IGNORE', $value);
+            if (is_string($converted) && trim($converted) !== '') {
+                $value = $converted;
+            }
+        }
+        $value = strtolower($value);
+        $value = preg_replace('/[^a-z0-9]+/', '-', $value) ?? $value;
+
+        return trim($value, '-');
+    }
+
+    private function tenantColumn(array $columns): ?string
+    {
+        if (in_array('id_tenant', $columns, true)) {
+            return 'id_tenant';
+        }
+        if (in_array('tenant_id', $columns, true)) {
+            return 'tenant_id';
+        }
+        foreach ($columns as $column) {
+            if (str_ends_with((string) $column, 'tenant_id')) {
+                return (string) $column;
+            }
+        }
+
+        return null;
+    }
+
+    private function sameTenantValue(string $left, string $right): bool
+    {
+        return $this->normalizeTenantFolderSegment($left) === $this->normalizeTenantFolderSegment($right);
     }
 
     private function detectFileKind(UploadedFile $file): string
@@ -597,6 +728,7 @@ class TenantBulkImportController extends Controller
             ['file_name' => 'RIESGO_NIVEL_ACCION_SET.csv', 'destination_table' => 'riesgo_nivel_accion_set_cfg', 'upload_order' => 180],
             ['file_name' => 'CRITERIOS_RIESGO_NI_AL.csv', 'destination_table' => 'criterios_nivel_alerta_cfg', 'upload_order' => 190],
             ['file_name' => 'PERSONA.csv', 'destination_table' => 'persona_mst', 'upload_order' => 200],
+            ['file_name' => 'users.csv', 'destination_table' => 'users', 'upload_order' => 205],
             ['file_name' => 'PERSONA_ROL.csv', 'destination_table' => 'persona_rol_cfg', 'upload_order' => 210],
             ['file_name' => 'PERSONA_ROL_GRUPO.csv', 'destination_table' => 'persona_rol_grupo_cfg', 'upload_order' => 220],
             ['file_name' => 'ELEMENTO_VULN.csv', 'destination_table' => 'elemento_vuln_mst', 'upload_order' => 230],

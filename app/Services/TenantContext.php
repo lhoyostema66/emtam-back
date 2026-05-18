@@ -4,9 +4,12 @@ namespace App\Services;
 
 final class TenantContext
 {
-    public function __construct(
-        private ?string $tenantId = null,
-    ) {}
+    private ?string $tenantId;
+
+    public function __construct(?string $tenantId = null)
+    {
+        $this->tenantId = $tenantId;
+    }
 
     public function setTenantId(?string $tenantId): void
     {

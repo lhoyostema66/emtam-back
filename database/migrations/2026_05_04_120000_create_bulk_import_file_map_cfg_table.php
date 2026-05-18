@@ -42,6 +42,7 @@ return new class extends Migration
             ['RIESGO_NIVEL_ACCION_SET.csv', 'riesgo_nivel_accion_set_cfg', 180],
             ['CRITERIOS_RIESGO_NI_AL.csv', 'criterios_nivel_alerta_cfg', 190],
             ['PERSONA.csv', 'persona_mst', 200],
+            ['users.csv', 'users', 205],
             ['PERSONA_ROL.csv', 'persona_rol_cfg', 210],
             ['PERSONA_ROL_GRUPO.csv', 'persona_rol_grupo_cfg', 220],
             ['ELEMENTO_VULN.csv', 'elemento_vuln_mst', 230],
@@ -81,4 +82,3 @@ return new class extends Migration
         Schema::dropIfExists('bulk_import_file_map_cfg');
     }
 };
-

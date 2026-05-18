@@ -40,6 +40,7 @@ INSERT INTO `bulk_import_file_map_cfg` (`file_name`, `destination_table`, `uploa
 ('RIESGO_NIVEL_ACCION_SET.csv', 'riesgo_nivel_accion_set_cfg', 180, 1, NOW(), NOW()),
 ('CRITERIOS_RIESGO_NI_AL.csv', 'criterios_nivel_alerta_cfg', 190, 1, NOW(), NOW()),
 ('PERSONA.csv', 'persona_mst', 200, 1, NOW(), NOW()),
+('users.csv', 'users', 205, 1, NOW(), NOW()),
 ('PERSONA_ROL.csv', 'persona_rol_cfg', 210, 1, NOW(), NOW()),
 ('PERSONA_ROL_GRUPO.csv', 'persona_rol_grupo_cfg', 220, 1, NOW(), NOW()),
 ('ELEMENTO_VULN.csv', 'elemento_vuln_mst', 230, 1, NOW(), NOW()),
