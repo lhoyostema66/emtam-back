@@ -3258,62 +3258,7 @@ class ActivationController extends Controller
                 ->value('pe_ro_gr-gr_op_id-fk');
         }
 
-        if (
-            !Schema::hasTable('ejecucion_accion_trs')
-            || !Schema::hasTable('asignacion_en_funciones_trs')
-            || !Schema::hasTable('accion_set_detalle_cfg')
-            || !Schema::hasTable('persona_mst')
-        ) {
-            return response()->json(['message' => 'Missing required tables.'], 422);
-        }
-
-        $rows = DB::table('ejecucion_accion_trs as ej')
-            ->join('asignacion_en_funciones_trs as asg', 'asg.as_en_fu-id', '=', 'ej.ej_ac-as_en_fu_id-fk')
-            ->join('accion_set_detalle_cfg as de', 'de.ac_se_de-id', '=', 'ej.ej_ac-ac_se_de_id-fk')
-            ->leftJoin('persona_mst as p', 'p.per-id', '=', 'asg.as_en_fu-per_id-fk')
-            ->where('ej.ej_ac-tenant_id', $tenantId)
-            ->where('ej.ej_ac-ac_de_pl_id-fk', $activationId)
-            ->orderBy('asg.as_en_fu-per_id-fk')
-            ->get([
-                'asg.as_en_fu-per_id-fk as per_id',
-                'p.per-email as email',
-                'p.per-tel_mov as tel_mov',
-                'p.per-nombre as nombre',
-                'p.per-apellido_1 as apellido_1',
-                'p.per-apellido_2 as apellido_2',
-            ]);
-
-        $byPerson = [];
-        foreach ($rows as $r) {
-            $perId = trim((string) ($r->per_id ?? ''));
-            if ($perId === '') {
-                continue;
-            }
-            $email = strtolower(trim((string) ($r->email ?? '')));
-            $nombre = trim(implode(' ', array_filter([
-                (string) ($r->nombre ?? ''),
-                (string) ($r->apellido_1 ?? ''),
-                (string) ($r->apellido_2 ?? ''),
-            ])));
-
-            $byPerson[$perId] ??= [
-                'per_id' => $perId,
-                'email' => $email !== '' ? $email : null,
-                'tel_mov' => $this->normalizeWhatsappNumber((string) ($r->tel_mov ?? '')),
-                'nombre' => $nombre !== '' ? $nombre : $perId,
-            ];
-            if (($byPerson[$perId]['email'] ?? null) === null && $email !== '') {
-                $byPerson[$perId]['email'] = $email;
-            }
-            if (($byPerson[$perId]['tel_mov'] ?? null) === null) {
-                $byPerson[$perId]['tel_mov'] = $this->normalizeWhatsappNumber((string) ($r->tel_mov ?? ''));
-            }
-            if (($byPerson[$perId]['nombre'] ?? '') === $perId && $nombre !== '') {
-                $byPerson[$perId]['nombre'] = $nombre;
-            }
-        }
-
-        $people = array_values($byPerson);
+        $people = $this->resolvePeopleForEndNotifications($tenantId, $activationId);
         if (empty($people)) {
             if (Schema::hasTable('cronologia_emergencia_trs')) {
                 DB::table('cronologia_emergencia_trs')->insert([
@@ -6755,6 +6700,161 @@ class ActivationController extends Controller
         }
 
         return array_values($unique);
+    }
+
+    private function resolvePeopleForEndNotifications(string $tenantId, string $activationId): array
+    {
+        $people = $this->resolvePeopleFromActivationNotificationLog($tenantId, $activationId);
+        if (!empty($people)) {
+            return $people;
+        }
+
+        if (
+            !Schema::hasTable('ejecucion_accion_trs')
+            || !Schema::hasTable('asignacion_en_funciones_trs')
+            || !Schema::hasTable('accion_set_detalle_cfg')
+            || !Schema::hasTable('persona_mst')
+        ) {
+            return [];
+        }
+
+        $rows = DB::table('ejecucion_accion_trs as ej')
+            ->join('asignacion_en_funciones_trs as asg', 'asg.as_en_fu-id', '=', 'ej.ej_ac-as_en_fu_id-fk')
+            ->join('accion_set_detalle_cfg as de', 'de.ac_se_de-id', '=', 'ej.ej_ac-ac_se_de_id-fk')
+            ->leftJoin('persona_mst as p', 'p.per-id', '=', 'asg.as_en_fu-per_id-fk')
+            ->where('ej.ej_ac-tenant_id', $tenantId)
+            ->where('ej.ej_ac-ac_de_pl_id-fk', $activationId)
+            ->orderBy('asg.as_en_fu-per_id-fk')
+            ->get([
+                'asg.as_en_fu-per_id-fk as per_id',
+                'p.per-email as email',
+                'p.per-tel_mov as tel_mov',
+                'p.per-nombre as nombre',
+                'p.per-apellido_1 as apellido_1',
+                'p.per-apellido_2 as apellido_2',
+            ]);
+
+        return $this->buildPeopleListFromRows($rows);
+    }
+
+    private function resolvePeopleFromActivationNotificationLog(string $tenantId, string $activationId): array
+    {
+        if (
+            !Schema::hasTable('notificacion_envio_trs')
+            || !Schema::hasColumn('notificacion_envio_trs', 'no_en-ac_de_pl_id-fk')
+            || !Schema::hasColumn('notificacion_envio_trs', 'no_en-per_id-fk')
+            || !Schema::hasTable('persona_mst')
+        ) {
+            return [];
+        }
+
+        $notifQuery = DB::table('notificacion_envio_trs')
+            ->when(
+                Schema::hasColumn('notificacion_envio_trs', 'no_en-tenant_id'),
+                static fn($q) => $q->where('no_en-tenant_id', $tenantId),
+            )
+            ->where('no_en-ac_de_pl_id-fk', $activationId)
+            ->whereNotNull('no_en-per_id-fk');
+
+        if (Schema::hasColumn('notificacion_envio_trs', 'no_en-mensaje')) {
+            $notifQuery->where(function ($q): void {
+                $q->whereNull('no_en-mensaje')
+                    ->orWhere(function ($sub): void {
+                        $sub->whereRaw("LOWER(COALESCE(`no_en-mensaje`, '')) NOT LIKE ?", ['%fin de%'])
+                            ->whereRaw("LOWER(COALESCE(`no_en-mensaje`, '')) NOT LIKE ?", ['%finalización del plan%']);
+                    });
+            });
+        }
+
+        if (Schema::hasColumn('notificacion_envio_trs', 'no_en-ts')) {
+            $notifQuery->orderBy('no_en-ts', 'asc');
+        }
+        if (Schema::hasColumn('notificacion_envio_trs', 'no_en-id')) {
+            $notifQuery->orderBy('no_en-id', 'asc');
+        }
+
+        $personIds = [];
+        $notifRows = $notifQuery->get(['no_en-per_id-fk']);
+        foreach ($notifRows as $row) {
+            $perId = trim((string) ($row->{'no_en-per_id-fk'} ?? ''));
+            if ($perId === '' || isset($personIds[$perId])) {
+                continue;
+            }
+            $personIds[$perId] = true;
+        }
+
+        if ($personIds === []) {
+            return [];
+        }
+
+        $orderedIds = array_keys($personIds);
+        $personaRows = DB::table('persona_mst')
+            ->when(
+                Schema::hasColumn('persona_mst', 'per-tenant_id'),
+                static fn($q) => $q->where('per-tenant_id', $tenantId),
+            )
+            ->whereIn('per-id', $orderedIds)
+            ->get([
+                'per-id as per_id',
+                'per-email as email',
+                'per-tel_mov as tel_mov',
+                'per-nombre as nombre',
+                'per-apellido_1 as apellido_1',
+                'per-apellido_2 as apellido_2',
+            ]);
+
+        $byPersonId = [];
+        foreach ($this->buildPeopleListFromRows($personaRows) as $row) {
+            $perId = trim((string) ($row['per_id'] ?? ''));
+            if ($perId !== '') {
+                $byPersonId[$perId] = $row;
+            }
+        }
+
+        $orderedPeople = [];
+        foreach ($orderedIds as $perId) {
+            if (isset($byPersonId[$perId])) {
+                $orderedPeople[] = $byPersonId[$perId];
+            }
+        }
+
+        return $orderedPeople;
+    }
+
+    private function buildPeopleListFromRows(iterable $rows): array
+    {
+        $byPerson = [];
+        foreach ($rows as $r) {
+            $row = is_array($r) ? $r : (array) $r;
+            $perId = trim((string) ($row['per_id'] ?? ''));
+            if ($perId === '') {
+                continue;
+            }
+            $email = strtolower(trim((string) ($row['email'] ?? '')));
+            $nombre = trim(implode(' ', array_filter([
+                (string) ($row['nombre'] ?? ''),
+                (string) ($row['apellido_1'] ?? ''),
+                (string) ($row['apellido_2'] ?? ''),
+            ])));
+
+            $byPerson[$perId] ??= [
+                'per_id' => $perId,
+                'email' => $email !== '' ? $email : null,
+                'tel_mov' => $this->normalizeWhatsappNumber((string) ($row['tel_mov'] ?? '')),
+                'nombre' => $nombre !== '' ? $nombre : $perId,
+            ];
+            if (($byPerson[$perId]['email'] ?? null) === null && $email !== '') {
+                $byPerson[$perId]['email'] = $email;
+            }
+            if (($byPerson[$perId]['tel_mov'] ?? null) === null) {
+                $byPerson[$perId]['tel_mov'] = $this->normalizeWhatsappNumber((string) ($row['tel_mov'] ?? ''));
+            }
+            if (($byPerson[$perId]['nombre'] ?? '') === $perId && $nombre !== '') {
+                $byPerson[$perId]['nombre'] = $nombre;
+            }
+        }
+
+        return array_values($byPerson);
     }
 
     private function getActionSets(string $tenantId, string $riesgoId, string $nivelAlertaId): array
