@@ -3645,6 +3645,263 @@ class ActivationController extends Controller
         ]);
     }
 
+    public function sendControlPanelSms(Request $request, string $activationId): JsonResponse
+    {
+        $tenantId = $this->tenantContext->tenantId();
+        if ($tenantId === null) {
+            return response()->json(['message' => __('messages.tenant.missing')], 422);
+        }
+
+        $activationId = trim($activationId);
+        if ($activationId === '') {
+            return response()->json(['message' => 'Invalid activation id.'], 422);
+        }
+
+        $user = $request->user();
+        $perfil = strtolower(trim((string) ($user?->perfil ?? '')));
+        if (!in_array($perfil, ['director', 'admin', 'tenant_admin'], true)) {
+            return response()->json(['message' => 'Forbidden.'], 403);
+        }
+
+        if (!Schema::hasTable('activacion_del_plan_trs')) {
+            return response()->json(['message' => 'Missing activacion_del_plan_trs table.'], 422);
+        }
+
+        $activationExists = DB::table('activacion_del_plan_trs')
+            ->when(
+                Schema::hasColumn('activacion_del_plan_trs', 'ac_de_pl-tenant_id'),
+                static fn($q) => $q->where('ac_de_pl-tenant_id', $tenantId),
+            )
+            ->where('ac_de_pl-id', $activationId)
+            ->exists();
+
+        if (!$activationExists) {
+            return response()->json(['message' => 'Activation not found.'], 404);
+        }
+
+        $data = $request->validate([
+            'user_ids' => ['nullable', 'array'],
+            'user_ids.*' => ['integer'],
+            'message' => ['required', 'string', 'max:1000'],
+        ]);
+
+        $requestedUserIds = collect(is_array($data['user_ids'] ?? null) ? $data['user_ids'] : [])
+            ->map(static fn($id) => (int) $id)
+            ->filter(static fn($id) => $id > 0)
+            ->unique()
+            ->values();
+
+        if ($requestedUserIds->isEmpty()) {
+            return response()->json(['message' => 'Select at least one tenant user.'], 422);
+        }
+
+        $tenant = Tenant::query()->where('tenant_id', $tenantId)->first();
+        $mode = $this->resolveNotificationMode();
+        $channels = $this->resolveNotificationChannels($tenant);
+        if ($mode !== 'file' && !((bool) ($channels['sms_enabled'] ?? false))) {
+            return response()->json(['message' => 'SMS sending is disabled for this tenant.'], 422);
+        }
+
+        $message = trim((string) ($data['message'] ?? ''));
+        if ($message === '') {
+            return response()->json(['message' => 'SMS message is required.'], 422);
+        }
+
+        $targets = [];
+        $currentUserId = (int) ($user?->id ?? 0);
+        if ($currentUserId > 0 && $requestedUserIds->contains($currentUserId)) {
+            return response()->json(['message' => 'You cannot send the control panel SMS to the current user.'], 422);
+        }
+
+        $targetUsers = User::query()
+            ->where('tenant_id', $tenantId)
+            ->whereIn('id', $requestedUserIds->all())
+            ->get();
+
+        if ($targetUsers->count() !== $requestedUserIds->count()) {
+            return response()->json(['message' => 'One or more selected users were not found.'], 404);
+        }
+
+        $invalidUsers = [];
+        foreach ($targetUsers as $targetUser) {
+            $targetPerId = trim((string) ($targetUser->persona_id ?? ''));
+            $targetPhone = '';
+            if (Schema::hasColumn('users', 'phone')) {
+                $targetPhone = $this->normalizeWhatsappNumber((string) ($targetUser->phone ?? ''));
+            }
+            if ($targetPhone === '' && $targetPerId !== '' && Schema::hasTable('persona_mst')) {
+                $personaPhone = DB::table('persona_mst')
+                    ->when(
+                        Schema::hasColumn('persona_mst', 'per-tenant_id'),
+                        static fn($q) => $q->where('per-tenant_id', $tenantId),
+                    )
+                    ->where('per-id', $targetPerId)
+                    ->value('per-tel_mov');
+                $targetPhone = $this->normalizeWhatsappNumber((string) $personaPhone);
+            }
+
+            $targetLabel = trim((string) ($targetUser->name ?? ''));
+            if ($targetLabel === '') {
+                $targetLabel = trim((string) ($targetUser->email ?? ''));
+            }
+            if ($targetLabel === '') {
+                $targetLabel = 'Usuario ' . (int) $targetUser->id;
+            }
+
+            if ($targetPhone === '') {
+                $invalidUsers[] = $targetLabel;
+                continue;
+            }
+
+            $targets[] = [
+                'type' => 'user',
+                'user_id' => (int) $targetUser->id,
+                'persona_id' => $targetPerId !== '' ? $targetPerId : null,
+                'label' => $targetLabel,
+                'phone' => $targetPhone,
+            ];
+        }
+
+        if (!empty($invalidUsers)) {
+            return response()->json([
+                'message' => 'Some selected users do not have a valid mobile phone number: ' . implode(', ', $invalidUsers),
+            ], 422);
+        }
+
+        $tenantNow = $this->tenantNow($tenantId);
+        $ts = now()->format('Ymd_His');
+        $smsSent = 0;
+        $smsFilesWritten = 0;
+        $failedRecipients = [];
+        $dir = '';
+
+        if ($mode === 'file') {
+            $dir = 'notifications_outbox/' . $tenantId . '/' . $activationId;
+            if (!Storage::disk('local')->exists($dir)) {
+                Storage::disk('local')->makeDirectory($dir);
+            }
+        }
+
+        foreach ($targets as $target) {
+            $targetPhone = (string) ($target['phone'] ?? '');
+            $targetLabel = (string) ($target['label'] ?? $targetPhone);
+            $targetPerId = trim((string) ($target['persona_id'] ?? ''));
+            $error = '';
+
+            if ($mode === 'file') {
+                $safePhone = preg_replace('/[^A-Za-z0-9._-]+/', '_', $targetPhone) ?: 'sms';
+                $path = $dir . '/' . $ts . '-control-sms-' . $safePhone . '.txt';
+                Storage::disk('local')->put($path, $message . "\n");
+                $smsFilesWritten++;
+            } else {
+                $result = $this->sendSmsText($tenantId, $targetPhone, $message, [
+                    'activation_id' => $activationId,
+                    'type' => 'control_panel_manual',
+                    'created_by_user_id' => $user?->id,
+                ]);
+                if (($result['sent'] ?? false) === true) {
+                    $smsSent++;
+                } else {
+                    $error = trim((string) ($result['error'] ?? 'SMS not sent.'));
+                    $failedRecipients[] = [
+                        'user_id' => $target['user_id'],
+                        'persona_id' => $targetPerId !== '' ? $targetPerId : null,
+                        'label' => $targetLabel,
+                        'phone' => $targetPhone,
+                        'reason' => $error,
+                    ];
+                }
+            }
+
+            if (Schema::hasTable('notificacion_envio_trs')) {
+                $insert = [
+                    'no_en-id' => 'NOEN-' . Str::uuid()->toString(),
+                    'no_en-tenant_id' => $tenantId,
+                    'no_en-ac_de_pl_id-fk' => $activationId,
+                    'no_en-per_id-fk' => $targetPerId !== '' ? $targetPerId : null,
+                    'no_en-gr_op_id-fk' => null,
+                    'no_en-rol_id-fk' => null,
+                    'no_en-ca_co_id-fk' => null,
+                    'no_en-mensaje' => '[SMS CONTROL] ' . $message,
+                    'no_en-ts' => $this->tenantNowDateTime($tenantId),
+                    'no_en-estado' => $mode === 'file' ? 'SIMULADO' : ($error === '' ? 'ENVIADO' : 'ERROR'),
+                    'no_en-num_de_intento' => '0',
+                ];
+                if ($error !== '') {
+                    $insert['no_en-mensaje'] = trim($insert['no_en-mensaje'] . ' [sms error: ' . $error . ']');
+                }
+                if (Schema::hasColumn('notificacion_envio_trs', 'no_en-modo')) {
+                    $insert['no_en-modo'] = $mode === 'file' ? 'PRUEBA' : 'PRODUCCION';
+                }
+                DB::table('notificacion_envio_trs')->insert($insert);
+            }
+        }
+
+        if (Schema::hasTable('cronologia_emergencia_trs')) {
+            $summaryLabels = collect($targets)
+                ->map(static fn($target) => (string) ($target['label'] ?? ''))
+                ->filter(static fn($label) => $label !== '')
+                ->take(3)
+                ->implode(', ');
+            $summarySuffix = count($targets) > 3 ? ' +' . (count($targets) - 3) : '';
+            DB::table('cronologia_emergencia_trs')->insert([
+                'cr_em-id' => 'CREM-' . Str::uuid()->toString(),
+                'cr_em-tenant_id' => $tenantId,
+                'cr_em-ac_de_pl_id-fk' => $activationId,
+                'cr_em-tipo_emergencia' => 'CONTROL_SMS',
+                'cr_em-ts_emergencia' => $tenantNow->toDateTimeString(),
+                'cr_em-per_id-fk' => null,
+                'cr_em-gr_op_id-fk' => null,
+                'cr_em-detalle' => 'SMS manual de panel enviado a ' . count($targets) . ' destinatario(s): ' . $summaryLabels . $summarySuffix,
+                'cr_em-ref_tabla' => 'notificacion_envio_trs',
+                'cr_em-referencia' => null,
+            ]);
+        }
+
+        $this->auditLogger->logFromRequest($request, [
+            'event_type' => 'notification_sent',
+            'module' => 'control_panel',
+            'plan_id' => $activationId,
+            'entity_type' => 'notificacion_envio_trs',
+            'entity_id' => $activationId,
+            'new_value' => [
+                'channel' => 'sms',
+                'target_type' => 'tenant_users',
+                'target_user_ids' => $requestedUserIds->all(),
+                'targets' => $targets,
+                'mode' => $mode,
+                'sent_count' => $mode === 'file' ? 0 : $smsSent,
+                'file_count' => $smsFilesWritten,
+                'failed_count' => count($failedRecipients),
+            ],
+            'justification' => 'Envío manual de SMS desde Pantalla 3',
+        ]);
+
+        if ($mode !== 'file' && $smsSent === 0) {
+            return response()->json([
+                'message' => !empty($failedRecipients)
+                    ? ('SMS not sent. ' . implode(' | ', array_map(static fn($item) => $item['label'] . ': ' . $item['reason'], $failedRecipients)))
+                    : 'SMS not sent.',
+                'mode' => $mode,
+                'sms_sent' => 0,
+                'sms_files_written' => 0,
+                'sms_recipients' => count($targets),
+                'recipients' => $targets,
+                'failed_recipients' => $failedRecipients,
+            ], 422);
+        }
+
+        return response()->json([
+            'message' => 'OK',
+            'mode' => $mode,
+            'sms_sent' => $smsSent,
+            'sms_files_written' => $smsFilesWritten,
+            'sms_recipients' => count($targets),
+            'recipients' => $targets,
+            'failed_recipients' => $failedRecipients,
+        ]);
+    }
+
     public function resetActivations(Request $request): JsonResponse
     {
         $tenantId = $this->tenantContext->tenantId();
