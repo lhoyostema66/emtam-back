@@ -1,6 +1,7 @@
 <?php
 
 use App\Http\Controllers\Api\V1\ActivationController;
+use App\Http\Controllers\Api\V1\AdminTestCenterController;
 use App\Http\Controllers\Api\V1\AuditController;
 use App\Http\Controllers\Api\V1\AuthController;
 use App\Http\Controllers\Api\V1\TableCrudController;
@@ -103,6 +104,8 @@ Route::prefix('v1')->group(function () {
         Route::get('audit', [AuditController::class, 'index']);
         Route::get('audit/filters', [AuditController::class, 'filters']);
         Route::get('audit/responsibilities', [AuditController::class, 'responsibilities']);
+        Route::get('admin/test-center/catalog', [AdminTestCenterController::class, 'catalog']);
+        Route::post('admin/test-center/run', [AdminTestCenterController::class, 'run']);
     });
 });
 
